@@ -1,0 +1,107 @@
+# =============================================================================
+# Mirage 版本目录（Version Catalog）
+# =============================================================================
+#
+# 为什么用 version catalog 而不是在各个 build.gradle.kts 里写死版本号：
+# 依赖版本集中一处，升级时不会出现「shared 用 1.9、androidApp 用 1.8」这种
+# 最难排查的类冲突。Android Studio 也能基于这个文件提示可升级项。
+#
+# 🔴 版本矩阵已经锁定，不要让 IDE 替我们升级。
+#
+# 2026-10-19 的首次 Sync 事故就是「让工具自己挑版本」的后果：
+# 骨架漏了 Gradle Wrapper，Android Studio 自己挑了 gradle-9.0-milestone-1，
+# 而 AGP 8.7.3 和 Kotlin 2.1.0 都不支持 Gradle 9.x，直接 BUILD FAILED。
+#
+# 工具链这四个版本是互相咬合的，必须当成一个整体看：
+#
+#   Gradle 8.9   (写在 gradle/wrapper/gradle-wrapper.properties，那里有完整推导)
+#   AGP 8.7.3    要求 Gradle >= 8.9，不支持 9.x
+#   Kotlin 2.1.0 支持 Gradle 7.6.3 ~ 8.10，不支持 9.x
+#   KSP 2.1.0-1.0.29  前缀必须和 kotlin 版本号完全一致，错一位就报插件不兼容
+#
+# 升级流程（唯一许可的方式）：
+#   1. 先查官方兼容矩阵，重算四者交集；
+#   2. 同一次提交里一起改 wrapper + agp + kotlin + ksp；
+#   3. 跑 ./gradlew :shared:jvmTest 和 :androidApp:assembleDebug 双验证。
+# 对 Android Studio 弹出的「有新版本可用，是否升级？」一律点否。
+# =============================================================================
+
+[versions]
+# --- 构建工具链 ---
+agp = "8.7.3"
+kotlin = "2.1.0"
+# Compose 编译器自 Kotlin 2.0 起随 Kotlin 发布，用 compose-compiler 插件即可，
+# 不再需要单独对齐 composeCompilerExtensionVersion
+composeBom = "2024.12.01"
+
+# --- 运行时依赖 ---
+# Ktor：选它而不是 OkHttp，因为 OkHttp 只有 JVM/Android，Ktor Client 是 KMP 原生。
+# 我们的网络层（SSE 流式解析、多厂商协议适配）必须放在 :shared 里，所以必须 KMP。
+ktor = "3.0.3"
+# kotlinx.serialization：解析角色卡 JSON、LLM 返回的结构化状态
+kotlinxSerialization = "1.7.3"
+kotlinxCoroutines = "1.9.0"
+kotlinxDatetime = "0.6.1"
+# Koin：选它而不是 Hilt，因为 Hilt 依赖 Android 注解处理器，不能用于 KMP commonMain
+koin = "4.0.0"
+# Room 2.7 起正式支持 KMP，这是我们能把存储层放进 :shared 的前提
+room = "2.7.0-alpha11"
+ksp = "2.1.0-1.0.29"
+sqlite = "2.5.0-alpha11"
+
+# --- Android ---
+androidxCore = "1.15.0"
+androidxActivity = "1.9.3"
+androidxLifecycle = "2.8.7"
+androidxDatastore = "1.1.1"
+# Security-Crypto：API Key 存储加密（docs/07 安全设计）
+androidxSecurityCrypto = "1.1.0-alpha06"
+
+[libraries]
+# --- Ktor ---
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+ktor-client-logging = { module = "io.ktor:ktor-client-logging", version.ref = "ktor" }
+# 测试用：拦截请求返回固定响应，让网络层也能单测
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+
+# --- kotlinx ---
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinxDatetime" }
+
+# --- Koin ---
+koin-core = { module = "io.insert-koin:koin-core", version.ref = "koin" }
+koin-android = { module = "io.insert-koin:koin-android", version.ref = "koin" }
+koin-compose = { module = "io.insert-koin:koin-androidx-compose", version.ref = "koin" }
+
+# --- Room (KMP) ---
+room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
+room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "sqlite" }
+
+# --- Android / Compose ---
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "androidxLifecycle" }
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidxDatastore" }
+androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "androidxSecurityCrypto" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-material-icons = { module = "androidx.compose.material:material-icons-extended" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+room = { id = "androidx.room", version.ref = "room" }

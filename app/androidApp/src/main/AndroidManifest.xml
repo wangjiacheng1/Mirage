@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      网络权限：Mirage 唯一需要的「危险」能力。
+      它只用于直连用户自己填的 LLM 服务商（BYOK），我们没有服务端、
+      不做任何埋点上报。这条在隐私政策里要写清楚（docs/07）。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      allowBackup=false 是有意的：
+      自动备份会把本地数据库（含聊天记录和加密后的 API Key）同步到
+      用户的云端备份。我们承诺「数据全本地」，所以关掉。
+    -->
+    <application
+        android:name=".MirageApp"
+        android:allowBackup="false"
+        android:label="Mirage"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Mirage">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Mirage">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

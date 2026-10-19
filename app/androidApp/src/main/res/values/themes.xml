@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Compose 应用只需要一个最小的 XML 主题做启动壳，
+      真正的配色/字体全部在 Compose 的 MaterialTheme 里定义。
+      NoActionBar 是必须的，否则会出现「系统标题栏 + Compose 顶栏」两条栏。
+    -->
+    <style name="Theme.Mirage" parent="android:Theme.Material.NoActionBar" />
+</resources>
