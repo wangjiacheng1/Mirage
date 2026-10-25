@@ -57,6 +57,10 @@ android {
 dependencies {
     implementation(project(":shared"))
 
+    // 界面层直接使用了协程与状态流类型（状态持有者里的作用域、StateFlow），
+    // 而引擎模块是以不传递的方式依赖它们的，所以这里必须自己声明一份
+    implementation(libs.kotlinx.coroutines.core)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)

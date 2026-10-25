@@ -219,12 +219,12 @@ throw new Error('这轮旧记录没有结算前快照，无法安全重新结算
 |---|---|
 | 超时策略 | ✅ 抄：**按「流式输出空闲时长」超时，不按总时长**。推理模型思考两分钟是正常的，按总时长会误杀 |
 | 版本绑定 | ✅ 抄：每个结算任务绑定 `(branchId, revision)`，回来时校验，不匹配直接置 `Stale` 丢弃 |
-| 自动重试 | ❌ **不自动重试**（见下） |
+| 自动重试 | ⚠️ **分层看，见 §6（已于 2026-10-19 更正）**：宿主层不自动重试，但 **MVU 框架层默认带重试策略，甚至有并发扇出** |
 | 并发 | ✅ 抄串行 + 单飞。但要**从一开始就用单一状态机管理**，不要像 DSH 那样靠多个字段（`committedRevision` / `body.background`）手工同步 —— 它的 bug 正是出在这两个字段没同步 |
 
 ---
 
-## 6. 待办 ①：结算失败**不自动重试**（已确认）
+## 6. 待办 ①：结算失败是否自动重试（⚠️ 2026-10-19 已更正，原结论只对一半）
 
 证据三处互相印证：
 
@@ -238,8 +238,18 @@ throw new Error('这轮旧记录没有结算前快照，无法安全重新结算
 > 恢复是「模型已经返回了，只是没写进去，现在补写」；重试是「重新花钱调模型」。
 > 前者可以自动，后者必须用户点。
 >
-> 📌 **我们照此办理，而且这正好强化支柱 ③「成本透明」**：
-> 绝不自动重试 = 绝不在用户不知情时花他的钱。这条要写进产品卖点。
+> 🔴 **2026-10-19 更正：上面这段结论的适用范围被我写错了，而且我据此写了「产品卖点」。**
+>
+> 本节的三处证据全部来自 **DSH Tavern 宿主层**（`CONTEXT.md` + 验收文档，讲的是
+> `body.background` / `Round` / `Session` 这一套）。但**结算真正发请求的那一层不是宿主，
+> 是内嵌的 MVU 上游框架 `magvarupdate`** —— 读它的源码后发现：
+> **它默认就带自动重试，而且提供「同时请求多次」的并发扇出模式。**
+>
+> 详见 **§12（E1-源码，证据等级高于本节的 E2/文档级证据）**。
+>
+> 教训：**子系统的结论不等于整个产品的结论。**「DSH Tavern 不自动重试」这句话里的
+> 「DSH Tavern」到底指宿主还是指它内嵌的 MVU 框架，我没有区分就下了结论，
+> 还直接升级成了对外卖点。凡要写「竞品不做 X」，必须先说清**是哪一层不做**。
 
 ---
 
@@ -381,3 +391,107 @@ ST 角色卡（只读，原样保存，绝不改写）
 | `B-18` | 分卷摘要压缩策略 | M3 |
 | `B-19` | `ImportCompatibilityTest` 真卡兼容性自测 | M2 |
 | `B-20` | 结算任务状态机用**单一状态字段**管理，不学 DSH 的多字段手工同步 | M2 |
+
+
+---
+
+## 12. 结算的触发时机与重试策略（E1-源码，2026-10-19 第 12 轮）
+
+> 证据等级 **E1-源码**，直接读的是 MVU 上游框架 `magvarupdate` 的 TypeScript 源码：
+> `refs/dsh-tavern/tavern-plugin/lib/vendor/magvarupdate/upstream/src/function/update/`
+> 本节结论**高于 §5/§6 的文档级证据**，冲突处以本节为准。
+
+### 12.1 触发时机：正文**完整收到之后**，不是边流边算 ✅ 坐实
+
+`index.ts` 把结算挂在 SillyTavern 的 `MESSAGE_RECEIVED` 事件上：
+
+```ts
+controlledStoppableEventOn(tavern_events.MESSAGE_SENT,     handleVariablesInMessage)
+controlledStoppableEventOn(tavern_events.MESSAGE_RECEIVED, _.throttle(onMessageReceived, 3000))
+```
+
+| 发现 | 对我们的影响 |
+|---|---|
+| 结算在 `MESSAGE_RECEIVED`（正文收完）后触发 | ✅ **正文流式通道与结算通道天然解耦、天然串行** → 可以安全地先做正文流式、后做结算，不会返工 |
+| `_.throttle(..., 3000)` 3 秒节流 | ✅ 抄。事件可能重复触发 |
+| `if (message_content.length < 5) return` | ✅ **抄这个坑**。源码注释原文：「MESSAGE_RECEIVED 有时候也会在请求的一开始递交，会包含一个 `...` 的消息」 |
+| `if (SillyTavern.chat.length <= 1) return` | ✅ 抄：**第一楼（开场白）不结算** |
+| 结算成功后把结果**追加写回正文消息末尾**（`message.trimEnd() + '\n\n' + result`） | ⚠️ 我们**不抄**：我们把状态存成独立事件流（铁律 3），不污染正文 |
+
+### 12.2 两条路线并存，且方案 A 是永久兜底
+
+`on_message_received.ts` 的分支逻辑：
+
+```
+更新方式 === '随AI输出'                    → handleVariablesInMessage()   // 方案 A：正文内标签
+应答格式 === '工具调用' && !支持函数调用     → handleVariablesInMessage()   // 降级
+!await isExtraModelSupported()            → handleVariablesInMessage()   // 降级
+否则                                       → invokeExtraModelWithStrategy() // 方案 C：独立结算
+```
+
+而且**方案 C 失败后仍然会再走一遍方案 A**：
+
+```ts
+} else {
+    toastr.error(tr('runtime.extraModel.updateFailed'), ...);
+}
+await handleVariablesInMessage(message_id);   // ← 无论成败都执行
+```
+
+> 📌 **这验证了 `ADR-010`「生成走 C、解析认 A」是对的，但也补上了我们漏掉的一环：
+> 方案 A 不只是「也要支持」，它是 C 不可用或 C 失败时的兜底路径，必须实装。**
+> 我们原先的理解偏向「C 为主、A 为辅」，实际竞品是「**C 为主、A 为网**」。
+
+### 12.3 🔴 重试策略：三种模式，其中两种会成倍花钱
+
+`invoke_extra_model.ts` 的 `invokeExtraModelWithStrategy()`，配置项 `请求方式` 三选一：
+
+| 模式 | 行为 | 成本倍数 |
+|---|---|---|
+| `依次请求，失败后重试` | 串行，最多试 `请求次数` 次，一旦成功立即返回 | 1 ～ N |
+| `同时请求多次` | `Promise.any` 同时发 N 个请求，取第一个有效结果，然后 `stopGenerationById` 取消其余 | **≈ N（见下）** |
+| `先请求一次, 失败后再同时请求多次` | 先单发一次，失败再扇出 N-1 个 | 1 或 ≈ N |
+
+并发模式的核心代码：
+
+```ts
+const uuids = _.times(times, uuidv4);
+// 在函数调用的模式下，允许接受 **任意** 有效的函数结果，因此被允许被覆盖。
+return await Promise.any(uuids.map(recordedInvoke));
+// finally:
+uuids.forEach(stopGenerationById);
+```
+
+### 12.4 ⭐ 由此得到一个 E1×E1 互证的差异化落点
+
+把两条**都是 E1 级**的证据摆在一起：
+
+| 证据 | 来源 |
+|---|---|
+| 竞品的并发结算模式会同时发 N 个请求，靠事后 `stopGenerationById` 取消多余的 | **E1-源码**（本节） |
+| **中断不省钱**：客户端断开 ≠ 上游停止。实测 3.5s 断开，后台仍跑满 20s、生成 315 token、**全额计费**，甚至比跑完的还多 5% | **E1-实测**（`docs/14 §13.2`） |
+
+→ **结论：竞品那个「取消其余请求」的动作在计费上几乎无效，「同时请求多次」就是实打实的 N 倍结算成本，而用户对此毫无感知。**
+
+这不是「竞品做得差」，它是为了提高结算成功率做的合理工程选择（结算失败率确实高，见用户实测）。
+但它**暴露了一个真实的、可验证的空档**，正落在支柱 ③「成本透明」上：
+
+| 我们要做的 | 为什么能做 |
+|---|---|
+| 结算重试策略在设置里**标注成本倍数**（「同时请求 3 次 ≈ 3 倍结算费用」） | 我们知道中断不省钱，竞品的 UI 没有这个提示 |
+| 重试/扇出产生的费用**进本轮成本回执**，不隐藏 | `J-7`~`J-11` 已规划的成本面板天然能承载 |
+| **默认用串行重试**，并发扇出做成需显式开启的高级项 | 默认值保护用户钱包 |
+
+> ⚠️ 注意措辞纪律：**不得**写成「竞品偷偷花你的钱」。准确表述是
+> 「竞品为提高成功率提供并发结算，但未提示成本倍数；我们提供同样的能力并把成本摊开」。
+
+### 12.5 其它可直接抄的实现细节（E1-源码）
+
+| 细节 | 源码 | 抄不抄 |
+|---|---|---|
+| 模块级 `is_analysis_in_progress` 标志，重入直接 `return null` | `invokeExtraModelWithStrategy()` 开头 | ✅ 串行锁。**但按 §5 的教训用单一状态机管，不要散落多个布尔** |
+| 手动点停止（`e === 'Clicked stop button'`）→ **不再重试** | `safeInvoke()` + 两处 `if (is_manual_canceled) return null` | ✅ 必抄。用户叫停就是叫停，不能继续花钱 |
+| `should_stream: 兼容假流式` —— 结算请求的流式是**可选配置项** | `requestReply()` | ✅ 印证：**结算通道不需要真流式**，M2 可以先用非流式实现，省一半工作量 |
+| 结算有**独立**的 `api地址 / 密钥 / 模型名称 / max_tokens / temperature / top_p / top_k` | `config.custom_api` | ✅ 印证 M0 的 D3（结算换便宜模型省 2/3 成本）：**结算必须是独立 Provider 配置，不是复用叙事的** |
+| `max_chat_history` —— 限制喂给结算模型多少历史 | `GenerateRawConfig` | ✅ 成本旋钮，抄 |
+| 临时切 `response_format: json_object` 再恢复（`setTemporaryJsonObjectResponseFormat` / `restore...`） | 同文件 | 🟡 我们直接在请求里带，不需要这种全局改了再还原的体操 |

@@ -110,7 +110,7 @@ class StateGuardsTest {
 
     @Test
     fun 正常变更_应落盘并标记Updated() {
-        // 这是 M0 实测里真实出现过的一轮：被狼咬掉 11 点血
+        // 这是实测中真实出现过的一轮：被咬掉 11 点
         val r = run(mapOf("冒险者/生命" to StateValue.IntValue(49)))
 
         assertEquals(SettlementStatus.Updated, r.status)
@@ -120,9 +120,9 @@ class StateGuardsTest {
             assertEquals("冒险者/生命", path)
             assertEquals(StateValue.IntValue(60), before)
             assertEquals(StateValue.IntValue(49), after)
-            // 回执文案要和 DSH Tavern 对齐：`60 → 49`
-            assertEquals("60", before.displayText())
-            assertEquals("49", after.displayText())
+            // 注意这里只断言「值是什么」，不断言「显示成什么样」。
+            // 渲染成 `60 → 49` 这类文本是展示层的职责，相应的测试也在那一层 ——
+            // 引擎侧断言渲染结果会把文案格式钉死在引擎里，改措辞就得动引擎
         }
     }
 
@@ -199,9 +199,11 @@ class StateGuardsTest {
         // 一条成功 + 一条否决 → Partial
         assertEquals(SettlementStatus.Partial, r.status)
         assertEquals(1, r.changes.size)
-        assertEquals(GuardFailureCode.UnknownPath, r.failures.single().code)
-        // 失败消息必须点明具体路径，不能是「参数错误」这种无效信息
-        assertTrue(r.failures.single().message.contains("冒险者/魔法值"))
+        val failure = r.failures.single()
+        assertEquals(GuardFailureCode.UnknownPath, failure.code)
+        // 必须点明具体是哪个路径。只给一个「参数错误」等于没给信息，
+        // 而展示层要靠这个路径把问题定位到具体字段
+        assertEquals("冒险者/魔法值", failure.path)
     }
 
     // ========================================================================
@@ -349,9 +351,13 @@ class StateGuardsTest {
         val r = run(mapOf("地牢/本轮房间" to StateValue.StringValue("战斗")))
 
         assertEquals(SettlementStatus.Error, r.status)
-        assertEquals(GuardFailureCode.IllegalEnum, r.failures.single().code)
-        // 消息里要列出合法取值，这样用户（和我们排查时）一眼知道该是什么
-        assertTrue(r.failures.single().message.contains("门厅"))
+        val failure = r.failures.single()
+        assertEquals(GuardFailureCode.IllegalEnum, failure.code)
+        // 必须带出允许的取值集合，展示层才能告诉使用者「本来该填什么」。
+        // 注意这里带的是结构化数据而不是拼好的句子 —— 同一条拦截在列表里
+        // 和详情里需要不同的详略程度，拼死了就没法分别处理
+        val allowed = failure.detail as GuardFailureDetail.AllowedValues
+        assertTrue(allowed.values.contains("门厅"))
     }
 
     @Test

@@ -2,21 +2,26 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!--
       网络权限：Mirage 唯一需要的「危险」能力。
-      它只用于直连用户自己填的 LLM 服务商（BYOK），我们没有服务端、
-      不做任何埋点上报。这条在隐私政策里要写清楚（docs/07）。
+      它只用于直连用户自己填写的模型服务地址，我们没有服务端，
+      也不做任何埋点上报。隐私说明里要如实写明这一点。
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!--
-      allowBackup=false 是有意的：
-      自动备份会把本地数据库（含聊天记录和加密后的 API Key）同步到
-      用户的云端备份。我们承诺「数据全本地」，所以关掉。
+      关闭自动备份是有意的，有两个独立的理由：
+
+      一是产品承诺数据只留在本机，备份会把聊天记录同步到云端，与承诺相悖。
+
+      二是技术上必须这么做：保护凭据的密钥由系统密钥库保管，而它不参与备份。
+      如果密文被备份到新设备而密钥留在旧设备，那条密文永远解不开 ——
+      用户会看到「凭据还在但怎么都用不了」，这是最难自助排查的一种故障。
+      不备份就不会产生这种自相矛盾的状态。
     -->
     <application
         android:name=".MirageApp"
         android:allowBackup="false"
-        android:label="Mirage"
+        android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Mirage">
 

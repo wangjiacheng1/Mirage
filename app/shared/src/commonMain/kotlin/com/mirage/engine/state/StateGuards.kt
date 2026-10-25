@@ -4,26 +4,26 @@ import kotlin.math.abs
 
 /**
  * ============================================================================
- * StateGuards —— ADR-012「约束下沉到代码层」的实现
+ * 状态守卫 —— 「约束下沉到代码层」的实现
  * ============================================================================
  *
  * ## 一句话
  *
- * **LLM 只负责「提议」，代码负责「裁决」。**
+ * **模型只负责「提议」，代码负责「裁决」。**
  *
  * ## 为什么必须这样做（这是实测结论，不是设计洁癖）
  *
- * M0 阶段我们跑了真实模型的对照实验，三个结果直接否掉了「靠提示词约束」的路线：
+ * 我们跑过真实模型的对照实验，三个结果直接否掉了「靠提示词约束」的路线：
  *
  * 1. **第 4 轮负向测试失败**：提示词里明写了「不要修改轮数」，模型依然凭空提议
- *    `/地牢/当前轮: 2→3`。→ 催生 G6（只读字段）。
+ *    `某个只读计数字段: 2→3`。→ 催生 G6（只读字段）。
  * 2. **D5 对照组反直觉**：把严格约束从提示词里**删掉**之后，断言通过率
  *    从 85% **升到** 97%。说明长篇约束不但没用，还在挤占模型的注意力。
  *    → 约束应该从提示词搬到代码里，提示词专心讲叙事。
  * 3. **D7 增量语义劣化**：让模型输出「+5 / -3」这种增量，断言通过率掉到 67%；
  *    改成输出绝对新值就恢复正常。→ 定下 E-3b：**delta 一律用绝对新值**。
  *
- * 竞品侧的旁证（E1-源码）：MVU 框架的 `set` 命令本身就无条件要求
+ * 一个旁证：上游同类框架的 `set` 命令本身就无条件要求
  * 「路径必须已存在，否则报错跳过」（`update_variables.ts`:
  * `if (path !== '' && !_.has(variables.stat_data, path)) { outError(...); continue }`）。
  * 也就是说，**行业标杆早就在代码层做路径白名单了**，我们不是在发明新规矩。
@@ -62,15 +62,15 @@ import kotlin.math.abs
 object StateGuards {
 
     /**
-     * 对一批 LLM 提议执行全部守卫，产出结算回执。
+     * 对一批 模型提议执行全部守卫，产出结算回执。
      *
      * @param turn        轮次号，原样写进回执。
      * @param current     当前状态快照（路径 → 值）。**守卫只读它，不修改。**
      *                    之所以要求传快照而不是可变状态：重算功能依赖
-     *                    「结算前快照」。DSH 源码里有一句
+     *                    「结算前快照」。同类实现里有一句
      *                    `'这轮旧记录没有结算前快照，无法安全重新结算变量'`，
      *                    说明它也是这么设计的，而且踩过没快照的坑。
-     * @param proposals   LLM 提议的变更，路径 → 新值（绝对值，见 E-3b）。
+     * @param proposals   模型提议的变更，路径 → 新值（绝对值，不是增减量）。
      *                    值为 [StateValue.Absent] 的条目会被直接忽略。
      * @param schema      约束契约。
      * @param summary     模型给的整轮自然语言理由，原样透传进回执。
@@ -103,20 +103,19 @@ object StateGuards {
                     path = path,
                     code = GuardFailureCode.ReadOnlyPath,
                     proposed = rawProposed,
-                    message = "「${spec.displayName ?: path}」由系统维护，不接受剧情结算修改",
                     disposition = Disposition.Rejected,
+                    displayName = spec.displayName,
                 )
                 continue
             }
 
             // ---- G1 路径白名单 -----------------------------------------------
-            // 模型凭空发明变量是高频现象（M0 实测），这里是第一道闸。
+            // 模型凭空发明变量是高频现象（实测），这里是第一道闸。
             if (spec == null) {
                 failures += GuardFailure(
                     path = path,
                     code = GuardFailureCode.UnknownPath,
                     proposed = rawProposed,
-                    message = "状态表里没有「$path」这一项，已忽略",
                     disposition = Disposition.Rejected,
                 )
                 continue
@@ -131,15 +130,15 @@ object StateGuards {
                     path = path,
                     code = GuardFailureCode.TypeMismatch,
                     proposed = rawProposed,
-                    message = "「${spec.displayName ?: path}」需要${spec.type.cn()}，" +
-                        "但结算给出的是「${rawProposed.displayText()}」，已忽略",
                     disposition = Disposition.Rejected,
+                    displayName = spec.displayName,
+                    detail = GuardFailureDetail.TypeExpectation(spec.type, spec.elementType),
                 )
                 continue
             }
 
             // ---- G4 枚举白名单 ------------------------------------------------
-            // 实证来源：M0 第 4 轮，`本轮房间` 被模型填成了卡里根本没定义的
+            // 实测样本：某个枚举字段被模型填成了定义里根本没有的
             // 「战斗」「石阶」。叙事上说得通，但面板上会出现一个谁都不认识的房间。
             val enumValues = spec.enumValues
             if (enumValues != null && coerced is StateValue.StringValue &&
@@ -149,9 +148,9 @@ object StateGuards {
                     path = path,
                     code = GuardFailureCode.IllegalEnum,
                     proposed = rawProposed,
-                    message = "「${spec.displayName ?: path}」只能是 " +
-                        enumValues.joinToString("/") + "，收到「${coerced.value}」，已忽略",
                     disposition = Disposition.Rejected,
+                    displayName = spec.displayName,
+                    detail = GuardFailureDetail.AllowedValues(enumValues.toList()),
                 )
                 continue
             }
@@ -168,20 +167,20 @@ object StateGuards {
 
             // ---- G7 单调方向 ---------------------------------------------------
             // 只在旧值也是数值时才有意义；旧值是 null（首次赋值）时不判方向。
-            if (oldNum != null && spec.monotonic != null) {
-                val violated = when (spec.monotonic) {
+            val requiredDirection = spec.monotonic
+            if (oldNum != null && requiredDirection != null) {
+                val violated = when (requiredDirection) {
                     Monotonic.Increasing -> newNum < oldNum
                     Monotonic.Decreasing -> newNum > oldNum
                 }
                 if (violated) {
-                    val dir = if (spec.monotonic == Monotonic.Increasing) "减少" else "增加"
                     failures += GuardFailure(
                         path = path,
                         code = GuardFailureCode.DirectionViolation,
                         proposed = rawProposed,
-                        message = "「${spec.displayName ?: path}」不应$dir" +
-                            "（${before.displayText()} → ${coerced.displayText()}），已忽略",
                         disposition = Disposition.Rejected,
+                        displayName = spec.displayName,
+                        detail = GuardFailureDetail.DirectionRequirement(requiredDirection),
                     )
                     continue
                 }
@@ -193,7 +192,7 @@ object StateGuards {
             var adjustedBy: GuardFailureCode? = null
 
             // ---- G5 单轮变化幅度 ------------------------------------------------
-            // 处置是 clamp 不是 reject：剧情里确实发生了事，粗暴丢弃会让玩家
+            // 处置是 clamp 不是 reject：剧情里确实发生了事，粗暴丢弃会让使用者
             // 觉得「我砍了一刀但怪没掉血」，那比数值偏小难受得多。
             val maxDelta = spec.maxDeltaPerTurn
             if (maxDelta != null && oldNum != null) {
@@ -204,9 +203,13 @@ object StateGuards {
                         path = path,
                         code = GuardFailureCode.DeltaTooLarge,
                         proposed = rawProposed,
-                        message = "「${spec.displayName ?: path}」单轮变化不超过 " +
-                            "${maxDelta.trim()}，已按上限调整为 ${capped.trim()}",
                         disposition = Disposition.Clamped,
+                        displayName = spec.displayName,
+                        detail = GuardFailureDetail.DeltaLimit(
+                            limit = maxDelta,
+                            attempted = delta,
+                            applied = capped - oldNum,
+                        ),
                     )
                     adjusted = capped
                     adjustedBy = GuardFailureCode.DeltaTooLarge
@@ -231,9 +234,13 @@ object StateGuards {
                     path = path,
                     code = GuardFailureCode.Clamped,
                     proposed = rawProposed,
-                    message = "「${spec.displayName ?: path}」超出范围，" +
-                        "已调整为 ${adjusted.trim()}",
                     disposition = Disposition.Clamped,
+                    displayName = spec.displayName,
+                    detail = GuardFailureDetail.RangeClamp(
+                        applied = rebuildNumber(adjusted, spec.type, coerced),
+                        lowerBound = lower,
+                        upperBound = upper,
+                    ),
                 )
                 if (adjustedBy == null) adjustedBy = GuardFailureCode.Clamped
             }
@@ -269,8 +276,8 @@ object StateGuards {
      *
      * 整轮状态的判定。核心是**不能把「没变化」当成「失败」**。
      *
-     * 这是用户实测里竞品的分水岭：DSH Tavern 用灰点 + 「本轮变量未更新」明确区分，
-     * 而表现差的产品会让玩家分不清「这轮剧情本来就不涉及数值」和「系统崩了」。
+     * 这是实测中同类产品的分水岭：做得好的会用不同颜色和不同文案明确区分，
+     * 而表现差的产品会让使用者分不清「这轮剧情本来就不涉及数值」和「系统崩了」。
      */
     private fun resolveStatus(
         changes: List<StateChange>,
@@ -292,14 +299,14 @@ object StateGuards {
      *
      * 🔴 这里藏着一个必须守住的实证教训。
      *
-     * 真实 ST 卡 DiLaoJSON.json 里，`敌人/生命上限` 的初始值是 **0**
+     * 实测过的一份外部数据里，`某个上限字段` 的初始值是 **0**
      * —— 它是「战斗还没开始」的占位值，不是真的上限。
-     * 如果这里老老实实把 0 当上界用，那么敌人一出场就会被夹成 0 血，
+     * 如果这里老老实实把 0 当上界用，那么相关数值一出现就会被夹到 0，
      * 游戏直接玩不下去。
      *
      * 所以规则是：**引用路径的值 ≤ 0 时，视为「上界未就绪」，跳过夹取**。
-     * 宁可放过一个超限值，也不能把游戏卡死 —— 这就是 docs/06 §9 的兼容硬底线：
-     * 导入的 ST 卡默认不得因为我们的守卫而比在原生酒馆里表现更差。
+     * 宁可放过一个超限值，也不能让内容无法进行 —— 这就是那条兼容硬底线：
+     * 导入的 外部数据默认不得因为我们的守卫而比在原生酒馆里表现更差。
      */
     private fun resolveUpperBound(spec: FieldSpec, current: Map<String, StateValue>): Double? {
         val fromPath = spec.maxFromPath
@@ -316,7 +323,7 @@ object StateGuards {
      *
      * 为什么要宽容：实测里模型经常把数字写成字符串（`"49"` 而不是 `49`），
      * 尤其是在 JSON 被 markdown 围栏包过一道之后。为这种小事丢弃一条合法变更，
-     * 会让玩家觉得系统很蠢。
+     * 会让使用者觉得系统很蠢。
      *
      * 为什么要有限度：我们只做**无歧义**的转换。
      * - `"49"` → 49 ✅（字符串里确实只有一个数字）
@@ -333,7 +340,7 @@ object StateGuards {
         FieldType.Int -> when (value) {
             is StateValue.IntValue -> value
             // 浮点转整数用四舍五入而不是截断：模型给 49.6 时，
-            // 玩家心理预期是 50 而不是 49。
+            // 使用者心理预期是 50 而不是 49。
             is StateValue.DoubleValue -> StateValue.IntValue(kotlin.math.round(value.value).toLong())
             is StateValue.StringValue -> value.value.trim().toLongOrNull()?.let(StateValue::IntValue)
                 ?: value.value.trim().toDoubleOrNull()
@@ -374,7 +381,7 @@ object StateGuards {
                     value
                 } else {
                     // 逐元素转换。**一个元素转不了，整条数组就拒绝** ——
-                    // 默默丢掉几个元素比整条拒绝更危险（玩家的物品会凭空少掉）。
+                    // 默默丢掉几个元素比整条拒绝更危险（列表内容会凭空少掉）。
                     val converted = value.items.map { item ->
                         coerce(item, FieldSpec(type = elementSpec)) ?: return null
                     }
@@ -404,18 +411,5 @@ object StateGuards {
             StateValue.DoubleValue(adjusted)
         }
         else -> fallback
-    }
-
-    /** 数值转人话：把 49.0 显示成 49，避免面板上出现多余的小数点。 */
-    private fun Double.trim(): String =
-        if (this == kotlin.math.floor(this) && abs(this) < 1e15) toLong().toString() else toString()
-
-    private fun FieldType.cn(): String = when (this) {
-        FieldType.Int -> "整数"
-        FieldType.Double -> "数字"
-        FieldType.String -> "文本"
-        FieldType.Bool -> "是/否"
-        FieldType.Array -> "列表"
-        FieldType.Any -> "任意值"
     }
 }

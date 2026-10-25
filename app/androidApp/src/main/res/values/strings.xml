@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  界面文案统一放在这里。
+  代码中不得出现面向使用者的字面量 —— 那样会让同一句话被钉死在所有界面上，
+  既改不了措辞，也没法换语言，更没法在不同位置用不同的详略程度。
+
+  引擎层只产出错误分类和结构化参数，具体说什么由这里决定。
+-->
+<resources>
+    <string name="app_name">Mirage</string>
+
+    <!-- 配置区 -->
+    <string name="config_title">模型配置</string>
+    <string name="config_show">展开配置</string>
+    <string name="config_hide">收起配置</string>
+    <string name="config_provider">服务来源</string>
+    <string name="config_model">模型名称</string>
+    <string name="config_model_hint">填写服务方提供的模型标识</string>
+    <string name="config_credential">访问密钥</string>
+    <string name="config_credential_hint">仅保存在本机，不会上传</string>
+    <string name="config_credential_saved">已保存：%1$s</string>
+    <string name="config_credential_none">尚未填写</string>
+    <!-- 重启后无法在不解密的前提下算出尾号，此时用它占位 -->
+    <string name="config_credential_mask">••••••</string>
+    <string name="config_save">保存密钥</string>
+    <string name="config_clear">清除密钥</string>
+    <string name="config_unverified_notice">此来源的地址与参数我们尚未实测验证，首次使用请留意是否能正常返回。</string>
+
+    <!-- 对话区 -->
+    <string name="chat_empty">填好上方配置后即可开始对话。</string>
+    <string name="chat_input_hint">说点什么</string>
+    <string name="chat_send">发送</string>
+    <string name="chat_stop">停止</string>
+    <string name="chat_stop_explain">停止只会让这边不再显示后续内容。服务方可能仍会把这次回复生成完，因此费用不一定会减少。</string>
+    <string name="chat_speaker_user">你</string>
+    <string name="chat_speaker_assistant">对方</string>
+    <string name="chat_reasoning_label">思考过程</string>
+
+    <!-- 进行阶段。刻意区分三种等待，避免把正常的长等待误判成卡死后重试 —— 重试会重复计费 -->
+    <string name="phase_connecting">正在连接…</string>
+    <string name="phase_preparing">已送达，对方正在准备…</string>
+    <string name="phase_generating">正在生成…</string>
+    <string name="phase_thinking">正在思考…（这部分同样会计费）</string>
+    <string name="phase_cancelled">已停止显示</string>
+
+    <!-- 用量 -->
+    <string name="usage_tokens">本次用量 %1$d</string>
+    <string name="usage_tokens_with_reasoning">本次用量 %1$d，其中思考 %2$d</string>
+    <string name="usage_cost">费用 %1$s</string>
+    <string name="usage_unavailable">服务方未返回用量</string>
+    <string name="usage_served_by">实际承接：%1$s</string>
+
+    <!-- 停止原因 -->
+    <string name="finish_length">回复因长度上限被截断。可尝试关闭思考或缩短上下文。</string>
+    <string name="finish_content_filter">内容被服务方的策略拦下。</string>
+
+    <!-- 失败。按「使用者能采取什么行动」分类，而不是按协议错误码 -->
+    <string name="error_unauthorized">密钥无效或未被接受，请检查配置。</string>
+    <string name="error_forbidden">该密钥没有访问此资源的权限。</string>
+    <string name="error_rate_limited">请求过于频繁，稍后再试。</string>
+    <string name="error_quota">余额或额度已用尽，需要先充值，重试无效。</string>
+    <string name="error_model_unavailable">模型不存在或当前密钥不可用，请检查模型名称。</string>
+    <string name="error_bad_request">请求不被接受，重试无效。</string>
+    <string name="error_server">服务方出现故障，稍后再试。</string>
+    <string name="error_idle_timeout">长时间没有收到新内容，已中断。</string>
+    <string name="error_network">网络连接出现问题。</string>
+    <string name="error_malformed">收到了无法解析的内容。</string>
+    <string name="error_cancelled">已取消。</string>
+    <string name="error_unknown">出现未知问题。</string>
+    <string name="error_detail">服务方返回：%1$s</string>
+    <string name="error_need_credential">请先填写并保存访问密钥。</string>
+    <string name="error_need_model">请先填写模型名称。</string>
+
+    <!-- ===================================================================
+         结算回执
+         「没有变化」和「结算失败」必须用完全不同的措辞，并且只有后者给重算入口：
+         合成一句含糊的「没更新」，使用者就无法判断要不要重来 ——
+         该重来时不重来会让数值一直少一截，不该重来时重来是白花一次钱。
+         =================================================================== -->
+    <string name="settlement_status_pending">准备结算…</string>
+    <string name="settlement_status_waiting">排队等待结算（前面还有 %1$d 轮）</string>
+    <string name="settlement_status_running">正在结算数值…</string>
+    <string name="settlement_status_updated">数值已更新（%1$d 项）</string>
+    <string name="settlement_status_partial">部分更新：%1$d 项已生效，%2$d 项未采用</string>
+    <string name="settlement_status_unchanged">本轮没有数值变化</string>
+    <string name="settlement_status_error">本轮结算失败，数值未改动</string>
+    <string name="settlement_status_stale">剧情已改动，这次结算结果已作废</string>
+    <string name="settlement_status_interrupted">结算被中断，数值未改动</string>
+    <string name="settlement_attempt">第 %1$d 次尝试</string>
+    <string name="settlement_change_line">%1$s　%2$s → %3$s</string>
+    <string name="settlement_change_adjusted">（已按规则修正）</string>
+    <string name="settlement_change_reason">原因：%1$s</string>
+    <string name="settlement_usage">结算开销：%1$s</string>
+    <!-- 三种可重试状态的起因不同，按钮就该说不同的话 -->
+    <string name="settlement_cancel">停止结算</string>
+    <string name="settlement_retry_error">重新结算</string>
+    <string name="settlement_retry_stale">按当前剧情重算</string>
+    <string name="settlement_retry_interrupted">继续结算</string>
+
+    <!-- 被拦下或被修正的提议。引擎只给分类和参数，句子在这里拼 -->
+    <string name="guard_unknown_path">「%1$s」不在本局的数值清单里，已忽略</string>
+    <string name="guard_type_mismatch">「%1$s」需要%2$s，给的值类型不符，已忽略</string>
+    <string name="guard_type_mismatch_plain">「%1$s」的值类型不符，已忽略</string>
+    <string name="guard_clamped">「%1$s」提议 %2$s 超出允许范围，已调整为 %3$s</string>
+    <string name="guard_clamped_plain">「%1$s」超出允许范围，已调整</string>
+    <string name="guard_illegal_enum">「%1$s」只能是：%2$s，已忽略</string>
+    <string name="guard_illegal_enum_plain">「%1$s」的取值不在允许范围内，已忽略</string>
+    <string name="guard_delta_too_large">「%1$s」单轮变化过大（提议 %2$s），已按 %3$s 计</string>
+    <string name="guard_delta_too_large_plain">「%1$s」单轮变化过大，已按上限计</string>
+    <string name="guard_read_only">「%1$s」不接受改动，已忽略</string>
+    <string name="guard_direction">「%1$s」只能%2$s，这次方向相反，已忽略</string>
+    <string name="guard_direction_plain">「%1$s」的变化方向不被允许，已忽略</string>
+    <string name="guard_direction_increase">增加</string>
+    <string name="guard_direction_decrease">减少</string>
+
+    <!-- 值与类型的说法 -->
+    <string name="value_true">是</string>
+    <string name="value_false">否</string>
+    <string name="value_null">无</string>
+    <string name="value_empty_list">（空）</string>
+    <string name="value_empty_text">（空）</string>
+    <string name="value_list_separator">、</string>
+    <string name="type_int">整数</string>
+    <string name="type_double">数值</string>
+    <string name="type_string">文本</string>
+    <string name="type_bool">是或否</string>
+    <string name="type_array">列表</string>
+    <string name="type_any">任意值</string>
+
+    <!-- 数值面板 -->
+    <string name="state_panel_title">状态栏（%1$d 项）</string>
+    <string name="state_panel_show">展开数值</string>
+    <string name="state_panel_hide">收起数值</string>
+    <string name="state_panel_entry">%1$s　%2$s</string>
+    <string name="state_panel_gauge_entry">%1$s　%2$s / %3$s</string>
+    <string name="state_panel_placeholder_notice">这组数值是内置的占位样例，用于验证结算链路；导入角色卡后会被卡里的设定替换。</string>
+
+    <!-- 角色卡导入 -->
+    <string name="card_import">导入角色卡</string>
+    <string name="card_import_hint">选择一个角色卡 JSON 文件</string>
+    <string name="card_current">当前角色卡：%1$s</string>
+    <string name="card_none">尚未导入角色卡，正在用内置占位数值</string>
+    <string name="card_preview_title">确认导入</string>
+    <string name="card_preview_body">角色：%1$s\n世界观设定：%2$d 条\n状态栏：%3$d 项</string>
+    <string name="card_preview_notes">有 %1$d 处初始数值没能读取，导入后这些项不会出现在状态栏</string>
+    <string name="card_preview_rules">这张卡自带数值结算规则，将优先使用它</string>
+    <string name="card_preview_no_rules">这张卡没写数值结算规则，将使用通用规则</string>
+    <string name="card_preview_no_state">这张卡没有状态栏，导入后不会进行数值结算</string>
+    <string name="card_preview_warn_replace">导入会清空当前对话并重置状态栏</string>
+    <string name="card_confirm">导入</string>
+    <string name="card_cancel">取消</string>
+    <string name="card_dialog_ok">知道了</string>
+    <string name="card_error_malformed">这个文件不是有效的 JSON，无法读取。</string>
+    <string name="card_error_not_object">文件内容不是一张角色卡（最外层应当是一个对象）。</string>
+    <string name="card_error_not_card">文件里找不到角色名，应该不是角色卡。</string>
+    <string name="card_error_unreadable">读不到这个文件，请换一个位置再试。</string>
+</resources>

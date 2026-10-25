@@ -87,7 +87,8 @@ kotlin {
             dependencies {
                 // Android 上 Ktor 用 OkHttp 引擎（HTTP/2、连接池成熟）
                 implementation(libs.ktor.client.okhttp)
-                implementation(libs.androidx.security.crypto)
+                // 凭据加密直接基于系统密钥库实现，不引入官方那个仍是预览版、
+                // 且已被标记为不再推荐使用的加密存储组件
             }
         }
 
