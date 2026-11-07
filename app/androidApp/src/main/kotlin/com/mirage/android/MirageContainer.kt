@@ -6,6 +6,8 @@ import com.mirage.engine.credential.CredentialStore
 import com.mirage.engine.llm.ChatCompletionClient
 import com.mirage.engine.net.createAndroidTransport
 import com.mirage.engine.settlement.SettlementCoordinator
+import com.mirage.engine.store.ChatStore
+import com.mirage.engine.store.createRoomChatStore
 
 /**
  * 把各个组件装配起来。
@@ -41,4 +43,7 @@ class MirageContainer(context: Context, debugBuild: Boolean) {
      * 各建一套只会多出一份连接池和一份需要单独维护的解析逻辑。
      */
     val settlementCoordinator: SettlementCoordinator = SettlementCoordinator(chatClient)
+
+    /** 存档读写。角色卡、对话记录、状态栏变化都从这里进出数据库。 */
+    val chatStore: ChatStore = createRoomChatStore(context)
 }

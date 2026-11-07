@@ -89,6 +89,18 @@ class StateStore(initial: Map<String, StateValue> = emptyMap()) {
     }
 
     /**
+     * 从存档恢复：把数值和版本号一起设回去。
+     *
+     * 必须连版本号一起恢复，不能只设数值。版本号是「后台结算结果还算不算数」的
+     * 唯一依据：如果重开 App 后版本号从 0 开始，而存档里已经是第 8 版，
+     * 那么重启前发起、重启后回来的结算结果会被误判成「还算数」而覆盖掉新数值。
+     */
+    fun restore(values: Map<String, StateValue>, revision: Long) {
+        _values.value = values
+        _revision.value = revision
+    }
+
+    /**
      * 整张状态栏换一套数值。开新局、换角色卡时用。
      *
      * 版本号同样会加一：整套数值都换了之后，后台还在跑的那些结算结果

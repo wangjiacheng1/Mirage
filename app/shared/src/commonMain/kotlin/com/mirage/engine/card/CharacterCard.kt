@@ -71,6 +71,15 @@ data class CharacterCard(
     val raw: JsonObject,
 )
 
+/**
+ * 取卡的原文，用于存档。
+ *
+ * 单独给一个方法，是为了不让界面层碰 JSON 类型 ——
+ * 界面只需要「一段能存下来、以后能原样读回来的文本」，
+ * 让它去认 JSON 的数据结构，等于把序列化这件事扩散到了不该管它的地方。
+ */
+fun CharacterCard.rawJsonText(): String = raw.toString()
+
 /** 角色卡的格式版本。 */
 enum class CardSpec {
     /** 最早的格式：字段直接摊在最外层，没有 data 这一层。 */

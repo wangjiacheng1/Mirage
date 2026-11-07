@@ -38,6 +38,8 @@ fun StatePanel(
     expanded: Boolean,
     onToggle: () -> Unit,
     placeholderNotice: Boolean,
+    /** 点了会把最近一轮重新算一次。为 null 表示现在没有可重算的轮次。 */
+    onResettle: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     if (values.isEmpty()) return
@@ -52,12 +54,22 @@ fun StatePanel(
                 text = stringResource(R.string.state_panel_title, values.size),
                 style = MaterialTheme.typography.labelLarge,
             )
-            TextButton(onClick = onToggle) {
-                Text(
-                    stringResource(
-                        if (expanded) R.string.state_panel_hide else R.string.state_panel_show,
-                    ),
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 重算入口放在状态栏这一行，而不是只留在回执卡片上：
+                // 卡片上那个只在失败时出现，而「算成功了但漏算了一项」时
+                // 用户同样想重算，那种情况卡片上没有按钮
+                onResettle?.let { action ->
+                    TextButton(onClick = action) {
+                        Text(stringResource(R.string.state_panel_resettle))
+                    }
+                }
+                TextButton(onClick = onToggle) {
+                    Text(
+                        stringResource(
+                            if (expanded) R.string.state_panel_hide else R.string.state_panel_show,
+                        ),
+                    )
+                }
             }
         }
 

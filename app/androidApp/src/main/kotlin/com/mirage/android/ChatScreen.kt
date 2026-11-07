@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -21,11 +22,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -53,6 +56,9 @@ fun ChatScreen(viewModel: ChatViewModel) {
     // 数值面板默认收起：它是用来核对的，不是主内容，展开着会一直占掉对话的高度
     var statePanelExpanded by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
+    // 正在编辑 / 正在确认删除的那条。为 null 表示弹窗没开
+    var editing by remember { mutableStateOf<TranscriptEntry?>(null) }
+    var deleting by remember { mutableStateOf<TranscriptEntry?>(null) }
 
     Column(
         modifier = Modifier
@@ -68,6 +74,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
         )
 
         if (configExpanded) {
+            //配置区
             ConfigPanel(
                 state = state,
                 onSelectProvider = viewModel::selectProvider,
@@ -78,6 +85,15 @@ fun ChatScreen(viewModel: ChatViewModel) {
             Spacer(Modifier.height(8.dp))
         }
 
+        //存档列表区。
+        SessionListSection(
+            sessions = state.sessions,
+            currentSessionId = state.currentSessionId,
+            onOpen = viewModel::openSession,
+            onDelete = viewModel::deleteSession,
+        )
+
+        //角色卡导入区。
         CardImportSection(
             summary = state.cardSummary,
             failure = state.cardImportFailure,
@@ -85,26 +101,37 @@ fun ChatScreen(viewModel: ChatViewModel) {
             onDismissFailure = viewModel::dismissCardImportFailure,
         )
 
+        //状态栏。
         StatePanel(
             values = state.stateValues,
             display = state.display,
             expanded = statePanelExpanded,
             onToggle = { statePanelExpanded = !statePanelExpanded },
+            // 有可重算的轮次、而且当前没有结算在跑时才给入口。
+            // 正在跑的时候再点一次，只会多花一次钱换同一个结果
+            onResettle = state.resettleTurn?.let { turn -> { viewModel.retrySettlement(turn) } },
             // 占位说明只在没导入卡时出现。导入之后数值就是卡里的了，再提示会让人困惑
             placeholderNotice = state.cardSummary == null,
         )
 
+        //对话记录
         Transcript(
             state = state,
             onRetrySettlement = viewModel::retrySettlement,
             onCancelSettlement = viewModel::cancelSettlement,
+            onRegenerate = viewModel::regenerate,
+            onEdit = { editing = it },
+            onDelete = { deleting = it },
+            onSwitchVersion = viewModel::switchVersion,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
         )
 
+        //状态区
         StatusArea(state)
 
+        //输入框
         InputRow(
             value = input,
             onValueChange = { input = it },
@@ -114,6 +141,32 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 input = ""
             },
             onStop = viewModel::stop,
+        )
+    }
+
+    editing?.let { target ->
+        MessageEditDialog(
+            initialText = target.text,
+            allowRegenerate = target.fromUser,
+            onConfirm = {
+                viewModel.editMessage(target.id, it)
+                editing = null
+            },
+            onConfirmAndRegenerate = {
+                viewModel.editAndRegenerate(target.id, it)
+                editing = null
+            },
+            onDismiss = { editing = null },
+        )
+    }
+
+    deleting?.let { target ->
+        MessageDeleteDialog(
+            onConfirm = {
+                viewModel.deleteMessage(target.id)
+                deleting = null
+            },
+            onDismiss = { deleting = null },
         )
     }
 }
@@ -268,6 +321,13 @@ private data class TranscriptRow(
     val text: String,
     /** 回复侧才有。用来把这一行和它那一轮的结算卡片对上。 */
     val turn: Int? = null,
+    /**
+     * 这一行对应的那条消息。
+     *
+     * 正在生成的那一行还没进库，所以是 null —— 它也就没有操作入口，
+     * 本来也不该有：内容还没生成完，谈不上重新生成或编辑
+     */
+    val entry: TranscriptEntry? = null,
 )
 
 /** 正在生成那一行的固定标识。同一时刻最多只有一行处于这个状态。 */
@@ -278,6 +338,10 @@ private fun Transcript(
     state: ChatUiState,
     onRetrySettlement: (Int) -> Unit,
     onCancelSettlement: () -> Unit,
+    onRegenerate: (Long) -> Unit,
+    onEdit: (TranscriptEntry) -> Unit,
+    onDelete: (TranscriptEntry) -> Unit,
+    onSwitchVersion: (Long, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val streamingText = state.turn.text
@@ -301,12 +365,63 @@ private fun Transcript(
         }
         for (index in state.transcript.indices.reversed()) {
             val entry = state.transcript[index]
-            add(TranscriptRow(entry.id, entry.fromUser, entry.text, entry.turn))
+            add(TranscriptRow(entry.id, entry.fromUser, entry.text, entry.turn, entry))
+        }
+    }
+
+    val listState = rememberLazyListState()
+
+    // 是否跟随最新内容。
+    //
+    // 🔴 只有「用户自己拖动列表」才会改它，别的任何情况都不改。
+    //
+    // 上一版栽在这里：当时的判断是「插进新行的那一刻，第 0 项还在不在视口里」。
+    // 但反向布局插入新行时，原先那条的下标会从 0 变成 1，列表的视口是锚在
+    // 那一条上的 —— 于是判断结果永远是「不在底部」，跟随再也不会发生。
+    // 症状正是「发完话，AI 的回复不自动出现，得手动滑一下」。
+    //
+    // 改成只在滚动过程中记录：拖上去看历史就停止跟随，拖回底部就恢复跟随。
+    // 插入新行不伴随滚动，所以它碰不到这个值。
+    var followNewest by remember { mutableStateOf(true) }
+
+    // 我们自己触发的滚动不算「用户意图」。
+    // 不区分的话，自动滚动过程中读到的中间位置会被当成「用户翻到别处了」而停止跟随
+    val autoScrolling = remember { mutableStateOf(false) }
+    suspend fun scrollToNewest() {
+        autoScrolling.value = true
+        listState.scrollToItem(0)
+        autoScrolling.value = false
+    }
+
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.firstVisibleItemIndex }
+            .collect { (scrolling, firstIndex) ->
+                if (scrolling && !autoScrolling.value) followNewest = firstIndex == 0
+            }
+    }
+
+    // 内容变了就跟到最新。
+    //
+    // 同时看「最新一行是谁」和「一共几行」：新回复开始生成时最新一行会换人，
+    // 而定稿时是把流式那一行换成正式一条、行数不变 —— 只看其中一个会漏掉一种情况。
+    val newestRowKey = rows.firstOrNull()?.key
+    LaunchedEffect(newestRowKey, rows.size) {
+        if (followNewest) scrollToNewest()
+    }
+
+    // 自己刚发出去的那句无条件可见，并重新开始跟随。
+    // 发完话看不到自己说了什么，会让人以为没发出去，然后重复发一次（白花一次钱）
+    val newestUserEntryId = state.transcript.lastOrNull { it.fromUser }?.id
+    LaunchedEffect(newestUserEntryId) {
+        if (newestUserEntryId != null) {
+            followNewest = true
+            scrollToNewest()
         }
     }
 
     LazyColumn(
         modifier = modifier,
+        state = listState,
         // 🔴 反向布局是这里的关键，不是风格选择。
         //
         // 它让列表从底部开始排布，于是：
@@ -336,6 +451,17 @@ private fun Transcript(
                         onCancel = onCancelSettlement,
                     )
                 }
+            }
+            // 反向布局下先画的在下面，所以操作行要排在气泡前面才会显示在气泡下方
+            row.entry?.let { entry ->
+                MessageActions(
+                    entry = entry,
+                    enabled = !state.turn.isActive,
+                    onRegenerate = { onRegenerate(entry.id) },
+                    onEdit = { onEdit(entry) },
+                    onDelete = { onDelete(entry) },
+                    onSwitchVersion = { delta -> onSwitchVersion(entry.id, delta) },
+                )
             }
             MessageBubble(fromUser = row.fromUser, text = row.text)
         }
@@ -373,7 +499,8 @@ private fun MessageBubble(fromUser: Boolean, text: String) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(text = text, style = MaterialTheme.typography.bodyMedium)
+                // 正文按角色扮演的排版约定渲染：*动作* 斜体、台词提亮
+                Text(text = narrativeText(text), style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
@@ -401,6 +528,16 @@ private fun StatusArea(state: ChatUiState) {
 
         phaseText(state.turn)?.let {
             Text(it, style = MaterialTheme.typography.bodySmall)
+        }
+
+        // 省略了历史必须说出来。聊着聊着模型突然不记得前面的事，
+        // 用户只会以为「这 AI 记性真差」，而真相是我们没把那段发过去
+        if (state.droppedHistoryCount > 0) {
+            Text(
+                text = stringResource(R.string.context_trimmed, state.droppedHistoryCount),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         state.turn.error?.let { error ->

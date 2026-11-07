@@ -89,7 +89,7 @@ object CardStateInitializer {
      * 读出状态栏初始内容。
      *
      * @return 这张卡没带状态玩法时返回 null —— 那是正常情况，不是失败。
-     *   纯聊天的卡本来就没有状态栏，这时整套结算都不该启用。
+     * 纯聊天的卡本来就没有状态栏，这时整套结算都不该启用。
      */
     fun extract(card: CharacterCard): CardStateInit? {
         val entries = card.worldBook?.entries ?: return null

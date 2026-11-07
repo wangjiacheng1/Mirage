@@ -6,7 +6,9 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 
@@ -70,5 +72,46 @@ object StateValueJson {
         }
 
         is JsonObject -> null
+    }
+
+    /**
+     * 状态值转成一段文本，用于存库。
+     *
+     * 存文本而不是给每种类型建一列：状态值有六种形态（整数、小数、文本、是否、
+     * 列表、空），分列存要六列加一个类型标记，读的时候还要按标记挑列。
+     * 而我们从不按状态值的内容查询（只按路径查），所以分列的唯一好处用不上。
+     */
+    fun encodeToText(value: StateValue): String =
+        encode(value)?.let { json.encodeToString(JsonElement.serializer(), it) } ?: "null"
+
+    /** 从库里读出来的文本转回状态值。认不出来时返回空值，不抛异常。 */
+    fun decodeFromText(text: String): StateValue = try {
+        decode(json.parseToJsonElement(text)) ?: StateValue.NullValue
+    } catch (failure: Exception) {
+        // 存坏了一条就让整局存档打不开，代价太大。
+        // 退回空值至少能让其余内容正常显示出来
+        StateValue.NullValue
+    }
+
+    private val json = Json
+
+    /**
+     * 一整张状态栏转成文本。给「存一份快照加速回放」用。
+     */
+    fun encodeMap(values: Map<String, StateValue>): String = json.encodeToString(
+        JsonObject.serializer(),
+        buildJsonObject {
+            values.forEach { (path, value) -> encode(value)?.let { put(path, it) } }
+        },
+    )
+
+    /** 文本转回一整张状态栏。 */
+    fun decodeMap(text: String): Map<String, StateValue> = try {
+        (json.parseToJsonElement(text) as? JsonObject)
+            ?.mapNotNull { (path, element) -> decode(element)?.let { path to it } }
+            ?.toMap()
+            ?: emptyMap()
+    } catch (failure: Exception) {
+        emptyMap()
     }
 }

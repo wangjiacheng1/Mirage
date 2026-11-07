@@ -18,6 +18,19 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.room)
+}
+
+// ----------------------------------------------------------------------------
+// Room 的表结构导出目录
+// ----------------------------------------------------------------------------
+// 每次改表结构，这里会多出一个 json 文件，记录当时的完整表定义。
+// 它的用处是写数据迁移时能对比「上一版表长什么样」—— 没有它，
+// 改表之后只能靠记忆去写迁移，而迁移写错会让用户的旧数据打不开。
+// 这些文件要入库。
+room {
+    schemaDirectory("$projectDir/schemas")
 }
 
 kotlin {
@@ -85,6 +98,11 @@ kotlin {
 
         val androidMain by getting {
             dependencies {
+                // 存储。Room 只放在 Android 这一侧：
+                // 它在 Android 上已经稳定多年，而跨平台支持还是预览版。
+                // 将来真要做 iOS，再给那一侧单独写一份实现，
+                // 共用的那套存储接口在 commonMain 里，不用动
+                implementation(libs.room.runtime)
                 // Android 上 Ktor 用 OkHttp 引擎（HTTP/2、连接池成熟）
                 implementation(libs.ktor.client.okhttp)
                 // 凭据加密直接基于系统密钥库实现，不引入官方那个仍是预览版、
@@ -98,6 +116,16 @@ kotlin {
             }
         }
     }
+}
+
+// ----------------------------------------------------------------------------
+// 让 Room 的代码生成只跑在 Android 这一侧
+// ----------------------------------------------------------------------------
+// 配置名是 kspAndroid 而不是 ksp：这是个多平台模块，每个平台有各自的配置名。
+// 写成 ksp 的话这里不会报错，但生成器根本不会运行，
+// 等到编译时才报「找不到 XxxDatabase_Impl」，很难想到是这一行的问题。
+dependencies {
+    add("kspAndroid", libs.room.compiler)
 }
 
 android {

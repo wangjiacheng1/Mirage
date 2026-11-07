@@ -43,6 +43,10 @@
     <string name="phase_thinking">正在思考…（这部分同样会计费）</string>
     <string name="phase_cancelled">已停止显示</string>
 
+    <!-- 上下文长度 -->
+    <string name="context_trimmed">为放进上下文，已省略较早的 %1$d 条对话</string>
+    <string name="context_estimate">本次输入约 %1$d（估算）</string>
+
     <!-- 用量 -->
     <string name="usage_tokens">本次用量 %1$d</string>
     <string name="usage_tokens_with_reasoning">本次用量 %1$d，其中思考 %2$d</string>
@@ -130,10 +134,36 @@
     <!-- 数值面板 -->
     <string name="state_panel_title">状态栏（%1$d 项）</string>
     <string name="state_panel_show">展开数值</string>
+    <string name="state_panel_resettle">重新结算</string>
     <string name="state_panel_hide">收起数值</string>
     <string name="state_panel_entry">%1$s　%2$s</string>
     <string name="state_panel_gauge_entry">%1$s　%2$s / %3$s</string>
     <string name="state_panel_placeholder_notice">这组数值是内置的占位样例，用于验证结算链路；导入角色卡后会被卡里的设定替换。</string>
+
+    <!-- 消息操作 -->
+    <string name="message_regenerate">重新生成</string>
+    <string name="message_edit">编辑</string>
+    <string name="message_delete">删除</string>
+    <string name="message_version">%1$d / %2$d</string>
+    <string name="message_version_prev">上一个版本</string>
+    <string name="message_version_next">下一个版本</string>
+    <string name="message_edit_title">编辑这条内容</string>
+    <string name="message_edit_save">只保存</string>
+    <string name="message_edit_save_regenerate">保存并重新生成</string>
+    <string name="message_edit_regenerate_hint">改了自己说的话之后，原来那条回复是按旧内容生成的。重新生成会新开一个版本，旧的那条仍可切回。</string>
+    <string name="message_delete_title">删除这条</string>
+    <string name="message_delete_body">这条以及后面接着的内容会一起删除，无法恢复。</string>
+
+    <!-- 存档 -->
+    <string name="session_title">存档（%1$d 局）</string>
+    <string name="session_show">展开存档</string>
+    <string name="session_hide">收起存档</string>
+    <string name="session_current">%1$s（当前）</string>
+    <string name="session_meta">%1$d 条消息 · %2$s</string>
+    <string name="session_delete">删除</string>
+    <string name="session_delete_title">删除存档</string>
+    <string name="session_delete_body">「%1$s」连同它的对话和数值记录会被永久删除，无法恢复。</string>
+    <string name="session_delete_confirm">永久删除</string>
 
     <!-- 角色卡导入 -->
     <string name="card_import">导入角色卡</string>

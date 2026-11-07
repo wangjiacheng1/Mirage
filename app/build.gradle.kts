@@ -12,4 +12,7 @@ plugins {
     alias(libs.plugins.kotlin.android) apply false
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.compose.compiler) apply false
+    // 存储用。ksp 负责跑 Room 的代码生成，room 插件负责把表结构导出成文件
+    alias(libs.plugins.ksp) apply false
+    alias(libs.plugins.room) apply false
 }
