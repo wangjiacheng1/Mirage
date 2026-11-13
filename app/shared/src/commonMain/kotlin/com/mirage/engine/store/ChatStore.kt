@@ -38,6 +38,27 @@ data class SessionSummary(
 )
 
 /**
+ * 存下来的一份结算回执。
+ *
+ * @property messageId 这份回执属于哪条回复。按消息挂而不是按轮次挂 ——
+ *   切换版本时轮次编号会对不上，消息编号永远唯一。
+ * @property usageTotalTokens 这次结算额外花掉的量。它是用户看不见的调用，
+ *   更要如实记下来。
+ */
+data class StoredReceipt(
+    val messageId: Long,
+    val turn: Int,
+    val status: String,
+    val summary: String?,
+    val changesJson: String,
+    val failuresJson: String,
+    val usageTotalTokens: Int?,
+    val usageCost: Double?,
+    val attempt: Int,
+    val createdAt: Long,
+)
+
+/**
  * 存档的读写入口。
  *
  * 所有碰数据库的操作都从这里走。界面和引擎都只认这个接口，
@@ -100,6 +121,17 @@ interface ChatStore {
 
     /** 追加状态栏的变化记录。只追加，不修改也不删除。 */
     suspend fun appendStateEvents(sessionId: Long, events: List<StateEvent>)
+
+    /**
+     * 存一份结算回执。同一条消息再结算一次就覆盖掉旧的。
+     *
+     * 覆盖是对的：重算的用意就是「上一次的结果不算数」，两份都留着，
+     * 界面还得决定显示哪一份。
+     */
+    suspend fun saveReceipt(sessionId: Long, receipt: StoredReceipt)
+
+    /** 读这一局的全部结算回执。 */
+    suspend fun receiptsOf(sessionId: Long): List<StoredReceipt>
 
     /** 读这一局的所有变化记录。 */
     suspend fun stateEventsOf(sessionId: Long): List<StateEvent>

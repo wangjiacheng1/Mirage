@@ -6,10 +6,14 @@ import androidx.room.Database
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
 
 /**
  * 存档表：一行就是一局游戏。
@@ -72,6 +76,30 @@ data class StateEventEntity(
     val afterJson: String,
     val reason: String?,
     val adjustedBy: String?,
+)
+
+/**
+ * 结算回执表：一行就是某条回复算完之后的那张卡片。
+ *
+ * 按**消息编号**做主键，不按轮次：切换版本时轮次编号会对不上，
+ * 而消息编号在整局里永远唯一。同一条消息重算就覆盖掉旧的那份。
+ *
+ * 变化和拦截存成文本。我们从不按它们查询（永远是整份取出来显示），
+ * 分表只换来几次 join 和一堆外键。
+ */
+@Entity(tableName = "settlement_receipts", indices = [Index("sessionId")])
+data class ReceiptEntity(
+    @PrimaryKey val messageId: Long,
+    val sessionId: Long,
+    val turn: Int,
+    val status: String,
+    val summary: String?,
+    val changesJson: String,
+    val failuresJson: String,
+    val usageTotalTokens: Int?,
+    val usageCost: Double?,
+    val attempt: Int,
+    val createdAt: Long,
 )
 
 /**
@@ -155,6 +183,19 @@ interface MirageDao {
     @Query("SELECT MAX(sequence) FROM state_events WHERE sessionId = :sessionId")
     suspend fun maxEventSequence(sessionId: Long): Long?
 
+    /** 同一条消息重算就覆盖旧的，所以用 REPLACE。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertReceipt(receipt: ReceiptEntity)
+
+    @Query("SELECT * FROM settlement_receipts WHERE sessionId = :sessionId")
+    suspend fun receiptsOf(sessionId: Long): List<ReceiptEntity>
+
+    @Query("DELETE FROM settlement_receipts WHERE sessionId = :sessionId")
+    suspend fun deleteReceipts(sessionId: Long)
+
+    @Query("DELETE FROM settlement_receipts WHERE messageId IN (:messageIds)")
+    suspend fun deleteReceiptsByMessageIds(messageIds: List<Long>)
+
     @Query("DELETE FROM sessions WHERE id = :sessionId")
     suspend fun deleteSession(sessionId: Long)
 
@@ -172,15 +213,65 @@ interface MirageDao {
  * 漏掉迁移的话，用户升级后打开 App 会直接崩 —— 因为代码认的表和手机上的表不一样。
  */
 @Database(
-    entities = [SessionEntity::class, MessageEntity::class, StateEventEntity::class],
-    version = 1,
+    entities = [
+        SessionEntity::class,
+        MessageEntity::class,
+        StateEventEntity::class,
+        ReceiptEntity::class,
+    ],
+    version = 2,
     exportSchema = true,
 )
 abstract class MirageDatabase : RoomDatabase() {
     abstract fun dao(): MirageDao
 }
 
-/** 打开（或第一次创建）本地数据库。 */
+/**
+ * 第 1 版到第 2 版：加一张结算回执表。
+ *
+ * 迁移的本质是「把老用户手机上那张旧表，原地改成新代码认识的样子」。
+ * 这次只是新增一张表，老的三张表一个字节都不动，所以是最安全的一类迁移。
+ *
+ * 🔴 **建表语句必须和实体定义严丝合缝**（列名、类型、可空性、主键、索引）。
+ * Room 升级时会拿迁移后的真实表结构去和实体比对，对不上就直接抛异常 ——
+ * 这是好事：它把「迁移写错了」变成启动时必然失败，而不是跑了半年才发现某一列一直是空的。
+ *
+ * 比对的依据就是导出的那些表结构文件，所以它们必须入库。
+ */
+private val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `settlement_receipts` (
+                `messageId` INTEGER NOT NULL,
+                `sessionId` INTEGER NOT NULL,
+                `turn` INTEGER NOT NULL,
+                `status` TEXT NOT NULL,
+                `summary` TEXT,
+                `changesJson` TEXT NOT NULL,
+                `failuresJson` TEXT NOT NULL,
+                `usageTotalTokens` INTEGER,
+                `usageCost` REAL,
+                `attempt` INTEGER NOT NULL,
+                `createdAt` INTEGER NOT NULL,
+                PRIMARY KEY(`messageId`)
+            )
+            """.trimIndent(),
+        )
+        connection.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_settlement_receipts_sessionId` " +
+                "ON `settlement_receipts` (`sessionId`)",
+        )
+    }
+}
+
+/**
+ * 打开（或第一次创建）本地数据库。
+ *
+ * 必须显式挂上每一个迁移。漏挂的话，装着旧版本的用户一升级就崩 ——
+ * 因为代码认的表和手机上的表对不上，而 Room 不会自作主张去改。
+ */
 fun createMirageDatabase(context: Context): MirageDatabase = Room
     .databaseBuilder(context, MirageDatabase::class.java, "mirage.db")
+    .addMigrations(MIGRATION_1_2)
     .build()

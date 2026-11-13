@@ -19,8 +19,10 @@ class TokenBudgetTest {
     private fun system(text: String) = ChatMessage(ChatRole.System, text)
 
     @Test
-    fun 中文按一字一个估算() {
-        assertEquals(5, TokenBudget.estimate("今天天气好"))
+    fun 汉字按一点五个估算() {
+        // 5 个汉字 = 7.5，向上取整 8。
+        // 按一字一个算会低估三成，而中文是主场景 —— 低估的后果是请求被服务端打回
+        assertEquals(8, TokenBudget.estimate("今天天气好"))
     }
 
     @Test

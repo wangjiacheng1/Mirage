@@ -85,6 +85,15 @@ fun ChatScreen(viewModel: ChatViewModel) {
             Spacer(Modifier.height(8.dp))
         }
 
+        //备份区。
+        BackupSection(
+            notice = state.backupNotice,
+            onExport = viewModel::exportBackup,
+            onImport = viewModel::importBackup,
+            onUnreadable = viewModel::reportBackupUnreadable,
+            onDismissNotice = viewModel::dismissBackupNotice,
+        )
+
         //存档列表区。
         SessionListSection(
             sessions = state.sessions,

@@ -17,7 +17,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.mirage.engine.settlement.SettlementPhase
-import com.mirage.engine.settlement.SettlementRecord
 import com.mirage.engine.state.Disposition
 import com.mirage.engine.state.GuardFailure
 import com.mirage.engine.state.GuardFailureCode
@@ -51,13 +50,13 @@ import com.mirage.engine.state.StateChange
  */
 @Composable
 fun SettlementReceiptCard(
-    record: SettlementRecord,
+    record: SettlementView,
     queuedAhead: Int,
     onRetry: (Int) -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val receipt = record.outcome.receipt
+    val receipt = record.receipt
 
     Surface(
         modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -107,7 +106,7 @@ fun SettlementReceiptCard(
 
             // 结算是使用者看不见的额外一次调用。看不见的开销更要如实列出来，
             // 否则账单上会出现他无法解释的数字
-            val usage = record.outcome.usage
+            val usage = record.usage
             if (!usage.isEmpty) {
                 Text(
                     text = stringResource(R.string.settlement_usage, usageText(usage)),
@@ -172,7 +171,7 @@ private fun ChangeLine(change: StateChange) {
  * 进行中说明「已经在跑了」。合成一句「处理中」会让人以为卡住了。
  */
 @Composable
-private fun statusText(record: SettlementRecord, queuedAhead: Int): String {
+private fun statusText(record: SettlementView, queuedAhead: Int): String {
     if (record.phase == SettlementPhase.Waiting) {
         return if (queuedAhead > 0) {
             stringResource(R.string.settlement_status_waiting, queuedAhead)
@@ -184,7 +183,7 @@ private fun statusText(record: SettlementRecord, queuedAhead: Int): String {
         return stringResource(R.string.settlement_status_running)
     }
 
-    val receipt = record.outcome.receipt
+    val receipt = record.receipt
     return when (record.status) {
         SettlementStatus.Updated -> stringResource(
             R.string.settlement_status_updated,

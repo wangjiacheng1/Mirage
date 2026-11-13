@@ -27,7 +27,9 @@ import com.mirage.engine.prompt.EntryPurpose
 import com.mirage.engine.state.StateDisplayInference
 import com.mirage.engine.state.StateDisplayProfile
 import com.mirage.engine.llm.ProviderProfile
+import com.mirage.engine.llm.TokenUsage
 import com.mirage.engine.settlement.SettlementCoordinator
+import com.mirage.engine.settlement.SettlementPhase
 import com.mirage.engine.settlement.SettlementOutcome
 import com.mirage.engine.settlement.SettlementQueue
 import com.mirage.engine.settlement.SettlementRecord
@@ -38,7 +40,13 @@ import com.mirage.engine.state.StateEventLog
 import com.mirage.engine.state.StateSchema
 import com.mirage.engine.state.StateStore
 import com.mirage.engine.state.StateValue
+import com.mirage.engine.store.BackupImportSummary
+import com.mirage.engine.store.BackupReadFailure
+import com.mirage.engine.store.BackupReadResult
+import com.mirage.engine.store.BackupService
 import com.mirage.engine.store.ChatStore
+import com.mirage.engine.store.ReceiptJson
+import com.mirage.engine.store.StoredReceipt
 import com.mirage.engine.store.SessionRecord
 import com.mirage.engine.store.SessionSummary
 import kotlinx.coroutines.Job
@@ -89,6 +97,49 @@ data class CardSummary(
     val hasSettlementRules: Boolean,
 )
 
+/**
+ * 备份操作的结果。
+ *
+ * 只给分类和数字，具体说什么由界面决定。
+ */
+sealed interface BackupNotice {
+    /** 导出成功，带上写出去的内容有多大，让用户对文件大小有个预期。 */
+    data class Exported(val sessionCount: Int, val byteCount: Int) : BackupNotice
+
+    data class Imported(val summary: BackupImportSummary) : BackupNotice
+
+    data class Failed(val code: BackupReadFailure?) : BackupNotice
+}
+
+/**
+ * 界面上一张结算卡片要显示的内容。
+ *
+ * 它有两个来源：**正在跑的队列**（带排队、进行中这些中间状态），
+ * 和**存档里读回来的**（重启之后只剩最终结果）。
+ * 界面不该关心这份回执是哪来的，所以在这里合成一种形状。
+ *
+ * @property phase 为 null 表示这是从存档读回来的 —— 那一轮早就算完了，
+ *   不存在「排队中」「正在算」这些中间状态。
+ */
+data class SettlementView(
+    val turn: Int,
+    val phase: SettlementPhase?,
+    val receipt: SettlementReceipt,
+    val usage: TokenUsage,
+    val attempt: Int,
+) {
+    val status: SettlementStatus get() = receipt.status
+
+    /** 能不能重算。正在排队或正在算的时候不给入口，再点只是多花一次钱。 */
+    val retryable: Boolean
+        get() = (phase == null || phase == SettlementPhase.Settled) &&
+            status in setOf(
+                SettlementStatus.Error,
+                SettlementStatus.Stale,
+                SettlementStatus.Interrupted,
+            )
+}
+
 /** 配置不全时的阻塞项。只给分类，文案由界面决定。 */
 enum class ConfigIssue {
     MissingCredential,
@@ -123,10 +174,19 @@ data class ChatUiState(
     val sessions: List<SessionSummary> = emptyList(),
     /** 当前打开的是哪一局。 */
     val currentSessionId: Long? = null,
+    /**
+     * 从存档里读回来的结算回执，按轮次索引。
+     *
+     * 重启之后队列是空的，没有它的话所有回执都会消失 ——
+     * 而状态栏的数值明明还在，一边有数字一边没有交代，看着像出了故障。
+     */
+    val restoredReceipts: Map<Int, SettlementView> = emptyMap(),
     /** 这次请求为了装进上下文而省略掉的历史条数。 */
     val droppedHistoryCount: Int = 0,
     /** 这次请求估算出来的输入长度。估算值，不是服务商的口径。 */
     val estimatedPromptTokens: Int = 0,
+    /** 备份导出 / 导入之后要显示的那条结果。为 null 表示没有待显示的结果。 */
+    val backupNotice: BackupNotice? = null,
 ) {
     /**
      * 状态栏上「重新结算」该算哪一轮。
@@ -144,8 +204,24 @@ data class ChatUiState(
             else -> settlements.lastOrNull()?.turn
         }
 
-    /** 取某一轮的结算记录。回复气泡下面挂哪张卡片由它决定。 */
-    fun settlementOf(turn: Int): SettlementRecord? = settlements.firstOrNull { it.turn == turn }
+    /**
+     * 取某一轮要显示的结算卡片。
+     *
+     * 正在跑的队列优先：它带着「排队中 / 正在算」这些中间状态，
+     * 而存档里读回来的永远是最终结果。同一轮两边都有时，队列里的才是最新的。
+     */
+    fun settlementOf(turn: Int): SettlementView? {
+        settlements.firstOrNull { it.turn == turn }?.let { record ->
+            return SettlementView(
+                turn = record.turn,
+                phase = record.phase,
+                receipt = record.outcome.receipt,
+                usage = record.outcome.usage,
+                attempt = record.attempt,
+            )
+        }
+        return restoredReceipts[turn]
+    }
 
     /**
      * 排在某一轮前面、还没跑完的任务数。
@@ -279,6 +355,9 @@ class ChatViewModel(
      */
     private val messageIdByTurn = mutableMapOf<Int, Long>()
 
+    /** 已经存过库的回执：轮次 → 第几次尝试。用来避免重复写库。 */
+    private val persistedReceipts = mutableMapOf<Int, Int>()
+
     /**
      * 当前这一局的消息树。
      *
@@ -339,6 +418,7 @@ class ChatViewModel(
         viewModelScope.launch {
             settlementQueue.records.collect { records ->
                 _state.update { it.copy(settlements = records) }
+                persistSettledReceipts(records)
             }
         }
         restoreLatestSession()
@@ -682,8 +762,12 @@ class ChatViewModel(
      * 再一次被判作废。
      */
     fun retrySettlement(turn: Int) {
-        val record = settlementQueue.recordOf(turn) ?: return
-        settlementQueue.submit(buildTask(turn, record.task.narrative))
+        // 队列里还留着这一轮就用它的正文；重启之后队列是空的，
+        // 那就从对话记录里取那条回复的原文 —— 要算的本来就是它
+        val narrative = settlementQueue.recordOf(turn)?.task?.narrative
+            ?: _state.value.transcript.firstOrNull { it.turn == turn }?.text
+            ?: return
+        settlementQueue.submit(buildTask(turn, narrative))
     }
 
     /**
@@ -886,6 +970,70 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * 把已经出结果的回执写进库。
+     *
+     * 只存已经跑完的：排队中、正在算这些中间状态存下去没有意义，
+     * 重启之后它们也不可能接着跑。
+     *
+     * 记下已经存过哪一份（轮次 + 第几次尝试），避免每次状态流动都重写一遍库 ——
+     * 一轮结算期间这个流会动好几次，不挡住就是好几次无谓的磁盘写入。
+     */
+    private fun persistSettledReceipts(records: List<SettlementRecord>) {
+        val session = sessionId ?: return
+        records.forEach { record ->
+            if (record.phase != SettlementPhase.Settled) return@forEach
+            val messageId = messageIdByTurn[record.turn] ?: return@forEach
+            if (persistedReceipts[record.turn] == record.attempt) return@forEach
+            persistedReceipts[record.turn] = record.attempt
+
+            val receipt = record.outcome.receipt
+            viewModelScope.launch {
+                chatStore.saveReceipt(
+                    sessionId = session,
+                    receipt = StoredReceipt(
+                        messageId = messageId,
+                        turn = record.turn,
+                        status = receipt.status.name,
+                        summary = receipt.summary,
+                        changesJson = ReceiptJson.encodeChanges(receipt.changes),
+                        failuresJson = ReceiptJson.encodeFailures(receipt.failures),
+                        usageTotalTokens = record.outcome.usage.totalTokens,
+                        usageCost = record.outcome.usage.cost,
+                        attempt = record.attempt,
+                        createdAt = currentTimeMillis(),
+                    ),
+                )
+            }
+        }
+    }
+
+    /** 把存档里的回执读回来，按轮次索引好给界面用。 */
+    private suspend fun loadRestoredReceipts(sessionId: Long): Map<Int, SettlementView> =
+        chatStore.receiptsOf(sessionId).associate { stored ->
+            stored.turn to SettlementView(
+                turn = stored.turn,
+                // 从存档读回来的没有中间状态，这里留空正是为了让界面知道这一点
+                phase = null,
+                receipt = SettlementReceipt(
+                    turn = stored.turn,
+                    status = statusOf(stored.status),
+                    summary = stored.summary,
+                    changes = ReceiptJson.decodeChanges(stored.changesJson),
+                    failures = ReceiptJson.decodeFailures(stored.failuresJson),
+                ),
+                usage = TokenUsage(
+                    totalTokens = stored.usageTotalTokens,
+                    cost = stored.usageCost,
+                ),
+                attempt = stored.attempt,
+            )
+        }
+
+    /** 状态名对不上就当失败处理，不让一条坏记录毁掉整局存档。 */
+    private fun statusOf(name: String): SettlementStatus =
+        SettlementStatus.entries.firstOrNull { it.name == name } ?: SettlementStatus.Error
+
     /** 启动时恢复最近玩过的那一局。 */
     private fun restoreLatestSession() {
         viewModelScope.launch {
@@ -1003,8 +1151,11 @@ class ChatViewModel(
         messageIdByTurn.clear()
         allMessages.forEach { message -> message.turn?.let { messageIdByTurn[it] = message.id } }
 
+        val restored = loadRestoredReceipts(session)
+
         _state.update { current ->
             current.copy(
+                restoredReceipts = restored,
                 transcript = line.map { message ->
                     // 同一个上一条下面挂着的那些，就是这句话的几个版本
                     val versions = messageTree.alternativesOf(message.id)
@@ -1035,17 +1186,67 @@ class ChatViewModel(
         headMessageId = null
         lastTurn = 0
         messageIdByTurn.clear()
+        persistedReceipts.clear()
         messageTree = MessageTree(emptyList())
         settlementQueue.clear()
         _state.update {
             it.copy(
                 transcript = emptyList(),
                 settlements = emptyList(),
+                restoredReceipts = emptyMap(),
                 cardSummary = null,
                 turn = ChatTurnState(),
             )
         }
     }
+
+    // ------------------------------------------------------------------
+    // 备份
+    // ------------------------------------------------------------------
+
+    /**
+     * 把全部存档打包成一段文本，交给界面写进文件。
+     *
+     * 文本在这里生成、由界面负责落盘：挑文件位置是 Android 的事，
+     * 打包是引擎的事，两者分开，打包逻辑就能脱离系统完整测试。
+     */
+    fun exportBackup(onReady: (String) -> Unit) {
+        viewModelScope.launch {
+            val document = BackupService.export(chatStore, currentTimeMillis())
+            val text = BackupService.encode(document)
+            _state.update {
+                it.copy(
+                    backupNotice = BackupNotice.Exported(
+                        sessionCount = document.sessions.size,
+                        byteCount = text.length,
+                    ),
+                )
+            }
+            onReady(text)
+        }
+    }
+
+    /** 读一份备份文件，把里面的存档加进来。 */
+    fun importBackup(text: String) {
+        viewModelScope.launch {
+            when (val result = BackupService.decode(text)) {
+                is BackupReadResult.Failure ->
+                    _state.update { it.copy(backupNotice = BackupNotice.Failed(result.code)) }
+
+                is BackupReadResult.Success -> {
+                    val summary = BackupService.import(chatStore, result.document)
+                    refreshSessions()
+                    _state.update { it.copy(backupNotice = BackupNotice.Imported(summary)) }
+                }
+            }
+        }
+    }
+
+    /** 读文件本身就失败了（权限、文件被移走）。和「内容不是备份」分开报。 */
+    fun reportBackupUnreadable() =
+        _state.update { it.copy(backupNotice = BackupNotice.Failed(null)) }
+
+    fun dismissBackupNotice() = _state.update { it.copy(backupNotice = null) }
 
     // ------------------------------------------------------------------
     // 角色卡

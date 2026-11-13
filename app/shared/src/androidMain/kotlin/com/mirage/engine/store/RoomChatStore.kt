@@ -131,6 +131,7 @@ class RoomChatStore(private val dao: MirageDao) : ChatStore {
         // 先删变化记录再删消息。反过来的话，万一中间出错，
         // 留下的是一堆找不到主人的变化记录，比留下几条消息更难排查
         dao.deleteStateEventsByMessageIds(messageIds)
+        dao.deleteReceiptsByMessageIds(messageIds)
         dao.deleteMessagesByIds(messageIds)
     }
 
@@ -197,6 +198,45 @@ class RoomChatStore(private val dao: MirageDao) : ChatStore {
     /**
      * 下一条变化记录该用的顺序号。
      */
+    /** 存一份结算回执。同一条消息重算就覆盖。 */
+    override suspend fun saveReceipt(sessionId: Long, receipt: StoredReceipt) =
+        withContext(Dispatchers.IO) {
+            dao.upsertReceipt(
+                ReceiptEntity(
+                    messageId = receipt.messageId,
+                    sessionId = sessionId,
+                    turn = receipt.turn,
+                    status = receipt.status,
+                    summary = receipt.summary,
+                    changesJson = receipt.changesJson,
+                    failuresJson = receipt.failuresJson,
+                    usageTotalTokens = receipt.usageTotalTokens,
+                    usageCost = receipt.usageCost,
+                    attempt = receipt.attempt,
+                    createdAt = receipt.createdAt,
+                ),
+            )
+        }
+
+    /** 读这一局的全部结算回执。 */
+    override suspend fun receiptsOf(sessionId: Long): List<StoredReceipt> =
+        withContext(Dispatchers.IO) {
+            dao.receiptsOf(sessionId).map { entity ->
+                StoredReceipt(
+                    messageId = entity.messageId,
+                    turn = entity.turn,
+                    status = entity.status,
+                    summary = entity.summary,
+                    changesJson = entity.changesJson,
+                    failuresJson = entity.failuresJson,
+                    usageTotalTokens = entity.usageTotalTokens,
+                    usageCost = entity.usageCost,
+                    attempt = entity.attempt,
+                    createdAt = entity.createdAt,
+                )
+            }
+        }
+
     override suspend fun nextEventSequence(sessionId: Long): Long = withContext(Dispatchers.IO) {
         (dao.maxEventSequence(sessionId) ?: 0L) + 1
     }
@@ -207,6 +247,7 @@ class RoomChatStore(private val dao: MirageDao) : ChatStore {
         // 不加外键是刻意的：加了之后删一局会触发级联，而级联出错时
         // 报的是 SQL 层的约束错误，很难看出是哪条业务操作引起的
         dao.deleteStateEvents(sessionId)
+        dao.deleteReceipts(sessionId)
         dao.deleteMessages(sessionId)
         dao.deleteSession(sessionId)
     }

@@ -72,8 +72,14 @@ object TokenBudget {
     /**
      * 估算一段文字有多少 token。
      *
-     * 按字符类别分开算：中日韩文字基本是一字一个 token，而英文和数字
-     * 若干个字符才算一个。这不精确，但方向上是对的，而且**偏保守**。
+     * 按字符类别分开算：一个汉字比一个英文字母贵得多。
+     *
+     * 🔴 汉字按 **1.5 个** 算，不是 1 个。
+     * 最初写成 1 个，和实际口径一对照才发现**中文场景低估了三成**，
+     * 而中文正是我们的主场景 —— 低估的后果是以为还装得下，结果请求被服务端打回。
+     *
+     * 为了不引入小数，内部用「半个 token」做单位，最后再除以二向上取整。
+     * 整数运算的好处是结果稳定可复现，不会出现浮点累加的误差。
      */
     fun estimate(text: String): Int {
         if (text.isEmpty()) return 0
@@ -82,8 +88,10 @@ object TokenBudget {
         text.forEach { char ->
             if (isWideChar(char)) wide += 1 else narrow += 1
         }
-        // 窄字符按每 3 个算 1 个，并且向上取整 —— 宁可多算
-        return wide + (narrow + NARROW_CHARS_PER_TOKEN - 1) / NARROW_CHARS_PER_TOKEN
+        // 窄字符三个字符算两个半 token（也就是每 3 个算 1 个），向上取整
+        val halves = wide * WIDE_HALF_TOKENS +
+            (narrow * 2 + NARROW_CHARS_PER_TOKEN - 1) / NARROW_CHARS_PER_TOKEN
+        return (halves + 1) / 2
     }
 
     /** 估算一组消息。每条都加一点固定开销，那是角色名和分隔符占的。 */
@@ -139,6 +147,9 @@ object TokenBudget {
             code in 0xFF00..0xFF60 || // 全角符号
             code in 0x3000..0x303F // 中日韩标点
     }
+
+    /** 一个汉字算几个「半 token」。3 个半 token = 1.5 个 token。 */
+    private const val WIDE_HALF_TOKENS = 3
 
     /** 窄字符多少个算一个 token。 */
     private const val NARROW_CHARS_PER_TOKEN = 3

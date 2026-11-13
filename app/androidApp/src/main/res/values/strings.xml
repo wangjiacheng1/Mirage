@@ -154,6 +154,17 @@
     <string name="message_delete_title">删除这条</string>
     <string name="message_delete_body">这条以及后面接着的内容会一起删除，无法恢复。</string>
 
+    <!-- 备份 -->
+    <string name="backup_title">备份</string>
+    <string name="backup_export">导出</string>
+    <string name="backup_import">导入</string>
+    <string name="backup_exported">已导出 %1$d 局存档，约 %2$d KB。文件中不含访问密钥，换机后需要重新填写。</string>
+    <string name="backup_imported">已导入 %1$d 局存档、%2$d 条消息。导入是新增，原有存档未受影响。</string>
+    <string name="backup_imported_skipped">\n其中 %1$d 条内容因数据不完整被跳过。</string>
+    <string name="backup_error_malformed">这个文件不是有效的备份文件。</string>
+    <string name="backup_error_version">这份备份来自更新版本的应用，当前版本读不了。</string>
+    <string name="backup_error_unreadable">读写文件失败，请换一个位置再试。</string>
+
     <!-- 存档 -->
     <string name="session_title">存档（%1$d 局）</string>
     <string name="session_show">展开存档</string>
