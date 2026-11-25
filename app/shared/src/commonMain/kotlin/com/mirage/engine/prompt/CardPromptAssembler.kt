@@ -49,6 +49,13 @@ data class ClassifiedEntry(
  */
 data class NarrativePrompt(
     val systemMessages: List<ChatMessage>,
+    /**
+     * 卡里的示范对话，已经拆成一轮轮真正的消息。
+     *
+     * 单独放一份，是因为它和真实聊天记录的待遇不同：**上下文不够时它最先被丢掉**。
+     * 示范对话是「锦上添花」，而真实剧情丢了就接不上了。
+     */
+    val exampleMessages: List<ChatMessage> = emptyList(),
     val trailingSystemMessage: ChatMessage? = null,
     val usedEntryComments: List<String> = emptyList(),
 )
@@ -127,10 +134,25 @@ object CardPromptAssembler {
         recentText: String = "",
         stateValues: Map<String, StateValue> = emptyMap(),
         userName: String = DEFAULT_USER_NAME,
+        /**
+         * 写在所有卡设定之前的通用叙事要求。为 null 表示不加。
+         *
+         * 放最前面是有讲究的：后面的内容更具体、更贴近这张卡，
+         * 和它冲突时以卡为准。
+         */
+        globalPreset: String? = null,
+        /**
+         * 之前那些轮次压缩出来的剧情摘要段落。为 null 表示还没压过。
+         *
+         * 排在设定之后、状态栏之前：先知道「这是谁」，再知道「发生过什么」，
+         * 最后才是「现在的数值是多少」，这个顺序和人读故事的顺序一致。
+         */
+        storySummary: String? = null,
     ): NarrativePrompt {
         val sections = mutableListOf<String>()
         val used = mutableListOf<String>()
 
+        globalPreset?.trim()?.takeIf { it.isNotEmpty() }?.let { sections += it }
         card.systemPrompt.trim().takeIf { it.isNotEmpty() }?.let { sections += it }
 
         // 角色本身的设定。拼成带小标题的几段，而不是糊成一大段 ——
@@ -138,7 +160,13 @@ object CardPromptAssembler {
         card.description.trim().takeIf { it.isNotEmpty() }?.let { sections += it }
         card.personality.trim().takeIf { it.isNotEmpty() }?.let { sections += it }
         card.scenario.trim().takeIf { it.isNotEmpty() }?.let { sections += it }
-        card.messageExample.trim().takeIf { it.isNotEmpty() }?.let { sections += it }
+
+        // 对话示例拆成真正的一问一答。拆得出来就走消息，拆不出来才退回当设定文字 ——
+        // 宁可没拆成，也不能把内容弄丢
+        val exampleBlocks = ExampleDialogueParser.parse(card.messageExample, userName, card.name)
+        if (exampleBlocks.isEmpty()) {
+            card.messageExample.trim().takeIf { it.isNotEmpty() }?.let { sections += it }
+        }
 
         val narrativeEntries = classify(card.worldBook?.entries ?: emptyList())
             .filter { it.purpose == EntryPurpose.Narrative && it.entry.enabled }
@@ -157,6 +185,10 @@ object CardPromptAssembler {
             }
         }
 
+        // 前情提要排在设定之后、状态栏之前。
+        // 它顶替的是那些已经不在聊天记录里的旧轮次，所以必须在历史之前出现
+        storySummary?.trim()?.takeIf { it.isNotEmpty() }?.let { sections += it }
+
         if (stateValues.isNotEmpty()) {
             sections += stateSection(stateValues)
         }
@@ -166,6 +198,18 @@ object CardPromptAssembler {
         // 理由有两条：一是各家服务商对「多条系统消息」的处理并不一致，
         // 有的只认第一条，剩下的设定就等于白送了；二是卡本来就是按
         // 「一整段系统提示词」设计的，拆开之后段与段的先后关系会变弱。
+        // 🔴 必须明说这是示范。不说的话模型会把它当成刚刚发生过的事，
+        // 于是接着示范里的情节往下写 —— 而那段情节和当前剧情毫无关系
+        val exampleMessages = exampleBlocks.flatMap { block ->
+            block.map { turn ->
+                ChatMessage(
+                    role = if (turn.fromUser) ChatRole.User else ChatRole.Assistant,
+                    content = CardMacros.expand(turn.text, userName, card.name),
+                )
+            }
+        }
+        if (exampleMessages.isNotEmpty()) sections += EXAMPLE_HEADER
+
         // 占位统一在这里换成真名字。放在最后一步，是为了让上面各段的拼装
         // 不用各自操心这件事，也不会漏掉某一段
         val merged = CardMacros.expand(
@@ -178,12 +222,18 @@ object CardPromptAssembler {
         } else {
             listOf(ChatMessage(ChatRole.System, merged))
         }
+        // 🔴 队尾要求用 user 角色发，不用 system。
+        //
+        // 不少模型只认真对待第一条 system 消息，夹在对话中间的那些会被轻描淡写地带过。
+        // 而这条偏偏是控制语气和结构的那一句（「先写什么、再写什么、不要替玩家行动」），
+        // 失效了最难察觉 —— 正文读起来「差不多但不太对」，却说不出哪里不对。
         val trailing = card.postHistoryInstructions.trim()
             .takeIf { it.isNotEmpty() }
-            ?.let { ChatMessage(ChatRole.System, CardMacros.expand(it, userName, card.name)) }
+            ?.let { ChatMessage(ChatRole.User, CardMacros.expand(it, userName, card.name)) }
 
         return NarrativePrompt(
             systemMessages = systemMessages,
+            exampleMessages = exampleMessages,
             trailingSystemMessage = trailing,
             usedEntryComments = used,
         )
@@ -224,6 +274,16 @@ object CardPromptAssembler {
      * 两者的区别在于：这句话改了会影响模型行为（要跟着回归测试），
      * 而界面文案改了只影响人怎么读。
      */
+    /**
+     * 示范对话前面的那句说明。
+     *
+     * 这是给模型的指令，所以写在这里而不是文案资源里 ——
+     * 改了它会影响模型行为，和改界面措辞是两回事。
+     */
+    private const val EXAMPLE_HEADER =
+        "接下来几轮是示范对话，用来示范这个角色说话的样子和排版。" +
+            "它们不是已经发生过的剧情，不要接着它们的情节往下写。"
+
     private const val STATE_HEADER =
         "下面是当前的状态数值，仅供你了解处境、保持前后一致。" +
             "不要在正文里写出任何数值、增减或结算结果，数值由系统单独处理。"

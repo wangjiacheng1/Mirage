@@ -13,6 +13,8 @@ import com.mirage.engine.llm.ChatRole
 import com.mirage.engine.card.CardParseFailure
 import com.mirage.engine.card.CardParseResult
 import com.mirage.engine.card.CardStateInit
+import com.mirage.engine.card.CardEditor
+import com.mirage.engine.card.CardField
 import com.mirage.engine.card.CardStateInitializer
 import com.mirage.engine.card.CardTextSanitizer
 import com.mirage.engine.history.MessageTree
@@ -27,8 +29,17 @@ import com.mirage.engine.prompt.EntryPurpose
 import com.mirage.engine.state.StateDisplayInference
 import com.mirage.engine.state.StateDisplayProfile
 import com.mirage.engine.llm.ProviderProfile
+import com.mirage.engine.llm.StreamError
 import com.mirage.engine.llm.TokenUsage
 import com.mirage.engine.settlement.SettlementCoordinator
+import com.mirage.engine.summary.CompactionPlan
+import com.mirage.engine.summary.CompactionTrigger
+import com.mirage.engine.summary.CompactionPlanner
+import com.mirage.engine.summary.StoryVolume
+import com.mirage.engine.summary.SummaryCoordinator
+import com.mirage.engine.summary.SummaryPromptBuilder
+import com.mirage.engine.summary.TurnSlices
+import com.mirage.engine.store.StoredVolume
 import com.mirage.engine.settlement.SettlementPhase
 import com.mirage.engine.settlement.SettlementOutcome
 import com.mirage.engine.settlement.SettlementQueue
@@ -112,6 +123,40 @@ sealed interface BackupNotice {
 }
 
 /**
+ * 压缩完之后要告诉用户的那一条。
+ *
+ * 只给分类和数字，具体说什么由界面决定。
+ */
+sealed interface CompactionNotice {
+
+    /**
+     * 压好了一卷，盖住了 [turnCount] 轮对话。
+     *
+     * 给的是轮数，不是「第几轮到第几轮」。轮次编号是内部用来挂记录的，
+     * 在整棵对话树里唯一 —— 重新生成过就会跳号，报出来和用户数的对不上。
+     */
+    data class Compacted(val turnCount: Int) : CompactionNotice
+
+    /** 把 [volumeCount] 卷合并成了一卷前情总览。 */
+    data class Merged(val volumeCount: Int) : CompactionNotice
+
+    /**
+     * 现在没有可压的内容。
+     *
+     * 要如实说出来。不说的话用户点了按钮什么反应都没有，只会以为按钮坏了。
+     */
+    data object NothingToDo : CompactionNotice
+
+    /**
+     * 这次压缩没成。原文一个字都没动，下次可以再点。
+     *
+     * 带上失败原因。只说「没成功」的话，是网络断了、还是密钥过期、
+     * 还是模型什么都没写，用户一个都分不出来，只能反复点。
+     */
+    data class Failed(val error: StreamError? = null) : CompactionNotice
+}
+
+/**
  * 界面上一张结算卡片要显示的内容。
  *
  * 它有两个来源：**正在跑的队列**（带排队、进行中这些中间状态），
@@ -168,6 +213,12 @@ data class ChatUiState(
     val display: StateDisplayProfile = StateDisplayProfile(),
     /** 当前用的角色卡概况。没导入卡时为 null，这时跑的是内置占位数值。 */
     val cardSummary: CardSummary? = null,
+    /**
+     * 当前这张卡本身。查看和编辑界面要读它的各个字段。
+     *
+     * 直接放整张卡，不把每个字段抄一份到界面状态里：抄一份就要多维护一处同步
+     */
+    val card: CharacterCard? = null,
     /** 导入卡失败的原因。只给分类，文案由界面决定。 */
     val cardImportFailure: CardParseFailure? = null,
     /** 全部存档，最近玩过的排在前面。 */
@@ -187,7 +238,30 @@ data class ChatUiState(
     val estimatedPromptTokens: Int = 0,
     /** 备份导出 / 导入之后要显示的那条结果。为 null 表示没有待显示的结果。 */
     val backupNotice: BackupNotice? = null,
+    /** 这一局已经压好的剧情摘要，按轮次先后。 */
+    val volumes: List<StoredVolume> = emptyList(),
+    /** 正在压缩。期间不给再点，再点只是多花一次钱算同一段。 */
+    val compacting: Boolean = false,
+    /** 压缩完要显示的那条结果。为 null 表示没有待显示的结果。 */
+    val compactionNotice: CompactionNotice? = null,
 ) {
+    /** 已经压到第几轮。0 表示还没压过。只在内部判断用，不往界面上报。 */
+    val compactedUpToTurn: Int
+        get() = volumes.maxOfOrNull { it.volume.toTurn } ?: 0
+
+    /**
+     * 已经压成摘要的有几轮。
+     *
+     * 现算而不是存一个数：轮次编号会跳号，拿「最大编号」当轮数会偏大。
+     * 数当前这条线上编号落在已压范围里的回复，才是真正压掉的轮数。
+     */
+    val compactedTurnCount: Int
+        get() = if (compactedUpToTurn <= 0) {
+            0
+        } else {
+            transcript.count { it.turn != null && it.turn <= compactedUpToTurn }
+        }
+
     /**
      * 状态栏上「重新结算」该算哪一轮。
      *
@@ -224,6 +298,19 @@ data class ChatUiState(
     }
 
     /**
+     * 最近这一轮后台结算那次调用的用量。没结算过、或者数字还没回来时为 null。
+     *
+     * 存档里读回来的也算数：重启之后正文那笔没了，但结算这笔一直在库里。
+     */
+    val latestSettlementUsage: TokenUsage?
+        get() {
+            val turn = settlements.lastOrNull()?.turn
+                ?: restoredReceipts.keys.maxOrNull()
+                ?: return null
+            return settlementOf(turn)?.usage?.takeIf { !it.isEmpty }
+        }
+
+    /**
      * 排在某一轮前面、还没跑完的任务数。
      *
      * 在界面侧算而不是让队列维护一个字段：它随时在变，存成字段就要考虑
@@ -258,6 +345,7 @@ class ChatViewModel(
     private val credentialStore: CredentialStore,
     private val selectionStore: SelectionStore,
     private val settlementCoordinator: SettlementCoordinator,
+    private val summaryCoordinator: SummaryCoordinator,
     private val chatStore: ChatStore,
 ) : ViewModel() {
 
@@ -734,6 +822,9 @@ class ChatViewModel(
         // 树要跟着重建：刚挂上去的这条可能是某句话的第二个版本，
         // 不重建的话界面上算不出「2/2」，左右切换也找不到另一个版本
         refreshMessageTree()
+        // 这一轮结束了，看看旧历史是不是该压一压了。
+        // 手动模式下这里直接返回，不做任何事
+        maybeAutoCompact()
     }
 
     // ------------------------------------------------------------------
@@ -750,6 +841,7 @@ class ChatViewModel(
      * 它既然已经计费，就不该再白白丢掉里面的数值变化。
      */
     private fun submitSettlement(turn: Int, narrative: String) {
+        if (!AppSwitches.ENABLE_SETTLEMENT) return
         if (schema.fields.isEmpty()) return
         settlementQueue.submit(buildTask(turn, narrative))
     }
@@ -843,24 +935,44 @@ class ChatViewModel(
     ): List<ChatMessage> {
         val leading = mutableListOf<ChatMessage>()
         val tail = mutableListOf<ChatMessage>()
+        var examples = emptyList<ChatMessage>()
+
+        // 已经压成摘要的那些轮次不再发原文。
+        // 摘要和原文同时发等于白压一次，还多花了一次钱
+        val remaining = historyAfterCompaction(history)
+        val summarySection = SummaryPromptBuilder.volumesSection(
+            _state.value.volumes.map { it.volume },
+        )
 
         // 导入了卡就按卡拼开头的系统消息：角色设定、命中的世界观条目、
         // 以及当前状态栏的数值（只让模型看，不让它在正文里写数值）
         val currentCard = card
         if (currentCard != null) {
             // 只拿最近几条聊天去匹配触发词。早就过去的话题不该一直把设定顶在上下文里
-            val recent = (history.takeLast(RECENT_SCAN_MESSAGES).map { it.text } + listOfNotNull(newInput))
+            val recent = (remaining.takeLast(AppSwitches.RECENT_SCAN_MESSAGES).map { it.text } + listOfNotNull(newInput))
                 .joinToString("\n")
             val prompt = CardPromptAssembler.buildNarrativePrompt(
                 card = currentCard,
                 recentText = recent,
-                stateValues = stateStore.values.value,
+                stateValues = if (AppSwitches.SEND_STATE_WITH_NARRATIVE) {
+                    stateStore.values.value
+                } else {
+                    emptyMap()
+                },
+                globalPreset = AppSwitches.GLOBAL_NARRATIVE_PRESET
+                    .takeIf { AppSwitches.USE_GLOBAL_NARRATIVE_PRESET },
+                storySummary = summarySection,
             )
             leading += prompt.systemMessages
+            examples = prompt.exampleMessages
             prompt.trailingSystemMessage?.let { tail += it }
+        } else if (summarySection != null) {
+            // 没导卡也可能压过。这时上面那套不走，摘要就得自己发一条 ——
+            // 漏掉的话原文已经被排除、摘要又没发，那几十轮等于凭空消失了
+            leading += ChatMessage(ChatRole.System, summarySection)
         }
 
-        val middle = history.mapNotNull { entry ->
+        val middle = remaining.mapNotNull { entry ->
             // 空内容的历史条目不能发出去，发送前自检会直接拦下整个请求
             entry.text.takeIf { it.isNotBlank() }?.let {
                 ChatMessage(
@@ -873,7 +985,12 @@ class ChatViewModel(
         // 这一轮用户说的话要排在队尾要求之前 —— 队尾要求的用意就是离模型最近
         newInput?.let { tail.add(0, ChatMessage(ChatRole.User, it)) }
 
-        val fit = TokenBudget.fit(leading = leading, history = middle, tail = tail)
+        val fit = TokenBudget.fit(
+            leading = leading,
+            history = middle,
+            tail = tail,
+            examples = examples,
+        )
         _state.update {
             it.copy(
                 droppedHistoryCount = fit.droppedCount,
@@ -881,6 +998,214 @@ class ChatViewModel(
             )
         }
         return fit.messages
+    }
+
+    /**
+     * 去掉已经压成摘要的那些轮次，只留后面的原文。
+     *
+     * 只有 AI 的回复带轮次编号，用户那条是 null。所以这里不逐条判断，
+     * 而是找出「最后一条属于已压轮次的回复」，把它和它前面的全部切掉 ——
+     * 这样同一轮里用户说的那句也会跟着走，不会剩下一句孤零零的提问。
+     */
+    private fun historyAfterCompaction(history: List<TranscriptEntry>): List<TranscriptEntry> {
+        val compactedUpTo = _state.value.compactedUpToTurn
+        if (compactedUpTo <= 0) return history
+
+        val lastCompacted = TurnSlices.lastIndexUpTo(history.map { it.turn }, compactedUpTo)
+        return if (lastCompacted < 0) history else history.drop(lastCompacted + 1)
+    }
+
+    // ------------------------------------------------------------------
+    // 摘要压缩
+    // ------------------------------------------------------------------
+
+    /**
+     * 用户点「压缩历史」。
+     *
+     * 把旧的那些轮次交给模型总结成一卷，之后这些轮次不再发原文、只发摘要。
+     * 最近若干轮保持原文不动。
+     */
+    fun compactNow() {
+        runCompaction(AppSwitches.KEEP_RECENT_TURNS)
+    }
+
+    /** 清掉压缩结果提示。 */
+    fun dismissCompactionNotice() {
+        _state.update { it.copy(compactionNotice = null) }
+    }
+
+    /**
+     * 是否需要压缩上下文
+     *
+     * 手动模式下这里什么都不做 —— 判断交给 [CompactionPlanner]，
+     * 这里不重复一遍「现在是什么模式」的逻辑。
+     */
+    private fun maybeAutoCompact() {
+        if (AppSwitches.COMPACTION_TRIGGER == CompactionTrigger.Manual) return
+        runCompaction(AppSwitches.KEEP_RECENT_TURNS, auto = true)
+    }
+
+    /**
+     * 跑一次压缩。
+     *
+     * ## 这一步的顺序很要紧
+     *
+     * ```
+     * 算出该压哪几轮 ──► 把那几轮原文拼成一段 ──► 请求模型总结
+     *   ──► 存成新的一卷 ──► 刷新界面
+     * ```
+     *
+     * **先存新卷，再删旧卷**（合并那条路）。顺序反了的话，中间一旦失败，
+     * 那几十轮剧情就彻底没了 —— 原文早就不发了，摘要又被删了。
+     *
+     * @param auto 是否自动触发。自动触发时不弹「没有可压的内容」——
+     *   那是每轮都会发生的正常情况，弹出来只是噪音。
+     */
+    private fun runCompaction(keepRecentTurns: Int, auto: Boolean = false) {
+        val session = sessionId ?: return
+        if (_state.value.compacting) return
+
+        val snapshot = _state.value
+        val volumes = snapshot.volumes.map { it.volume }
+        val completedTurns = snapshot.transcript.mapNotNull { it.turn }.sorted()
+
+        val plan = CompactionPlanner.plan(
+            completedTurns = completedTurns,
+            volumes = volumes,
+            trigger = AppSwitches.COMPACTION_TRIGGER,
+            keepRecentTurns = keepRecentTurns,
+            estimatedPromptTokens = snapshot.estimatedPromptTokens,
+            contextTokens = TokenBudget.DEFAULT_CONTEXT_TOKENS,
+            volumeTokens = TokenBudget.estimate(
+                SummaryPromptBuilder.volumesSection(volumes).orEmpty(),
+            ),
+        )
+
+        if (plan is CompactionPlan.Nothing) {
+            if (!auto) _state.update { it.copy(compactionNotice = CompactionNotice.NothingToDo) }
+            return
+        }
+
+        val profile = snapshot.profile ?: return
+
+        _state.update { it.copy(compacting = true, compactionNotice = null) }
+
+        viewModelScope.launch {
+            // 凭据是挂起读的，必须在协程里取
+            val credential = credentialStore.read(snapshot.providerId)
+            if (credential.isNullOrBlank()) {
+                _state.update {
+                    it.copy(compacting = false, issue = ConfigIssue.MissingCredential)
+                }
+                return@launch
+            }
+
+            val notice = runCatching {
+                when (plan) {
+                    is CompactionPlan.NewVolume -> compactNewVolume(session, snapshot, plan, profile, credential)
+                    is CompactionPlan.MergeVolumes -> mergeVolumes(session, plan, profile, credential)
+                    CompactionPlan.Nothing -> CompactionNotice.NothingToDo
+                }
+            }.getOrElse { CompactionNotice.Failed() }
+
+            _state.update { it.copy(compacting = false, compactionNotice = notice) }
+            refreshFromHead()
+        }
+    }
+
+    /** 把计划里那几轮压成新的一卷。 */
+    private suspend fun compactNewVolume(
+        session: Long,
+        snapshot: ChatUiState,
+        plan: CompactionPlan.NewVolume,
+        profile: ProviderProfile,
+        credential: String,
+    ): CompactionNotice {
+        val transcript = transcriptTextOf(snapshot.transcript, plan.fromTurn, plan.toTurn)
+        if (transcript.isBlank()) return CompactionNotice.NothingToDo
+
+        val outcome = summaryCoordinator.summarize(
+            profile = profile,
+            credential = credential,
+            request = SummaryPromptBuilder.buildVolumeRequest(
+                modelId = snapshot.modelId,
+                transcript = transcript,
+            ),
+        )
+        // 拿不到内容就什么都不改。存一个空卷会永久顶替掉那几轮原文，
+        // 表现成「它把中间那一段完全忘了」，极难定位
+        val text = outcome.text ?: return CompactionNotice.Failed(outcome.error)
+
+        chatStore.saveVolume(
+            sessionId = session,
+            volume = StoryVolume(
+                index = plan.volumeIndex,
+                fromTurn = plan.fromTurn,
+                toTurn = plan.toTurn,
+                text = text,
+            ),
+            createdAt = currentTimeMillis(),
+        )
+        // 这一段里有几条带编号的回复，就是压掉了几轮。
+        // 不能用「结束编号 - 起始编号 + 1」—— 编号会跳号，那样算出来偏大
+        val turnCount = snapshot.transcript.count {
+            it.turn != null && it.turn >= plan.fromTurn && it.turn <= plan.toTurn
+        }
+        return CompactionNotice.Compacted(turnCount = turnCount)
+    }
+
+    /** 把几卷合并成一卷前情总览。 */
+    private suspend fun mergeVolumes(
+        session: Long,
+        plan: CompactionPlan.MergeVolumes,
+        profile: ProviderProfile,
+        credential: String,
+    ): CompactionNotice {
+        val outcome = summaryCoordinator.summarize(
+            profile = profile,
+            credential = credential,
+            request = SummaryPromptBuilder.buildMergeRequest(
+                modelId = _state.value.modelId,
+                volumes = plan.volumes,
+            ),
+        )
+        val text = outcome.text ?: return CompactionNotice.Failed(outcome.error)
+
+        // 🔴 先存后删。反过来的话，中间一旦失败那几十轮剧情就彻底没了
+        chatStore.saveVolume(
+            sessionId = session,
+            volume = StoryVolume(
+                index = 1,
+                fromTurn = plan.volumes.minOf { it.fromTurn },
+                toTurn = plan.volumes.maxOf { it.toTurn },
+                text = text,
+                merged = true,
+            ),
+            createdAt = currentTimeMillis(),
+        )
+        chatStore.deleteVolumes(_state.value.volumes.map { it.id })
+        return CompactionNotice.Merged(volumeCount = plan.volumes.size)
+    }
+
+    /**
+     * 把指定轮次范围内的对话拼成一段文字，交给模型去总结。
+     *
+     * 用户那条不带轮次编号，所以这里按「轮次区间内的回复」划边界：
+     * 一旦越过了区间末尾就停下，前面的全收。
+     */
+    private fun transcriptTextOf(
+        transcript: List<TranscriptEntry>,
+        fromTurn: Int,
+        toTurn: Int,
+    ): String {
+        val range = TurnSlices.indicesOf(transcript.map { it.turn }, fromTurn, toTurn) ?: return ""
+
+        return transcript.subList(range.first, range.last + 1)
+            .filter { it.text.isNotBlank() }
+            .joinToString("\n\n") { entry ->
+                val speaker = if (entry.fromUser) "玩家" else "叙述"
+                "$speaker：${entry.text}"
+            }
     }
 
     // ------------------------------------------------------------------
@@ -1094,7 +1419,7 @@ class ChatViewModel(
         val initialValues = if (restoredCard == null) {
             PlaceholderStateProfile.initialValues
         } else {
-            init?.values ?: emptyMap()
+            expandMacros(init?.values ?: emptyMap(), restoredCard.name)
         }
         card = restoredCard
         schema = if (restoredCard == null) {
@@ -1102,7 +1427,10 @@ class ChatViewModel(
         } else {
             init?.schema ?: StateSchema(fields = emptyMap())
         }
-        cardFieldNotes = restoredCard?.let { CardPromptAssembler.settlementRules(it) }
+        cardFieldNotes = restoredCard?.let { source ->
+            CardPromptAssembler.settlementRules(source)
+                ?.let { CardMacros.expand(it, CardPromptAssembler.DEFAULT_USER_NAME, source.name) }
+        }
 
         headMessageId = session.headMessageId
         sessionInitialValues = initialValues
@@ -1110,6 +1438,7 @@ class ChatViewModel(
 
         _state.update { current ->
             current.copy(
+                card = restoredCard,
                 cardSummary = restoredCard?.let { summaryOf(it, schema.fields.size, init?.notes?.size ?: 0) },
                 currentSessionId = session.id,
                 issue = null,
@@ -1152,10 +1481,12 @@ class ChatViewModel(
         allMessages.forEach { message -> message.turn?.let { messageIdByTurn[it] = message.id } }
 
         val restored = loadRestoredReceipts(session)
+        val volumes = chatStore.volumesOf(session)
 
         _state.update { current ->
             current.copy(
                 restoredReceipts = restored,
+                volumes = volumes,
                 transcript = line.map { message ->
                     // 同一个上一条下面挂着的那些，就是这句话的几个版本
                     val versions = messageTree.alternativesOf(message.id)
@@ -1194,9 +1525,59 @@ class ChatViewModel(
                 transcript = emptyList(),
                 settlements = emptyList(),
                 restoredReceipts = emptyMap(),
+                volumes = emptyList(),
+                compacting = false,
+                compactionNotice = null,
+                card = null,
                 cardSummary = null,
                 turn = ChatTurnState(),
             )
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 改角色卡
+    // ------------------------------------------------------------------
+
+    /**
+     * 改当前这张卡的内容。
+     *
+     * **不清空对话、不重置状态栏。** 改几个字就把正在玩的进度清掉，没人受得了。
+     *
+     * 改动在原文上做（不认识的字段原样保留），存回这一局，再重新装配提示词 ——
+     * 下一轮对话就按新内容走了。
+     *
+     * 世界观条目和状态初值这里不动：改它们会牵动状态栏的字段清单，
+     * 而清单一变，已经记下来的数值变化就对不上了。
+     */
+    fun editCard(edits: Map<CardField, String>) {
+        if (edits.isEmpty()) return
+        val current = card ?: return
+        val session = sessionId ?: return
+
+        viewModelScope.launch {
+            val text = CardEditor.applyEdits(current.rawJsonText(), edits) ?: return@launch
+            val parsed = CharacterCardParser.parse(text)
+            if (parsed !is CardParseResult.Success) {
+                // 改出来的东西读不回来说明哪里出了问题。宁可不保存，
+                // 也不能把一张读不了的卡写进存档
+                _state.update { it.copy(cardImportFailure = (parsed as CardParseResult.Failure).code) }
+                return@launch
+            }
+
+            chatStore.updateSessionCard(session, text, currentTimeMillis())
+            card = parsed.card
+            cardFieldNotes = CardPromptAssembler.settlementRules(parsed.card)
+                ?.let { CardMacros.expand(it, CardPromptAssembler.DEFAULT_USER_NAME, parsed.card.name) }
+
+            _state.update {
+                it.copy(
+                    card = parsed.card,
+                    cardSummary = summaryOf(parsed.card, schema.fields.size, 0),
+                    cardImportFailure = null,
+                )
+            }
+            refreshSessions()
         }
     }
 
@@ -1284,8 +1665,14 @@ class ChatViewModel(
         // 没有状态玩法的纯聊天卡：状态栏清空、字段清单也清空。
         // 字段清单为空时结算整个不启用，这是故意的 —— 没有状态栏可算
         schema = init?.schema ?: com.mirage.engine.state.StateSchema(fields = emptyMap())
-        stateStore.reset(init?.values ?: emptyMap())
+        // 卡里的初始值也可能带占位，不替换的话状态栏上会直接显示出 {{user}}
+        val initialValues = expandMacros(init?.values ?: emptyMap(), imported.name)
+        sessionInitialValues = initialValues
+        stateStore.reset(initialValues)
+        // 🔴 卡自带的结算规则里也写着 {{user}}，不替换的话模型会把这几个字
+        // 当成真内容，直接写进状态栏的文字项里
         cardFieldNotes = CardPromptAssembler.settlementRules(imported)
+            ?.let { CardMacros.expand(it, CardPromptAssembler.DEFAULT_USER_NAME, imported.name) }
         lastTurn = 0
 
         // 导卡 = 开新的一局。旧的那一局连着它的消息和变化记录都留在库里，
@@ -1323,7 +1710,8 @@ class ChatViewModel(
             current.copy(
                 transcript = listOfNotNull(openingEntry),
                 settlements = emptyList(),
-                display = StateDisplayInference.infer(init?.values ?: emptyMap(), schema),
+                display = StateDisplayInference.infer(initialValues, schema),
+                card = imported,
                 cardSummary = CardSummary(
                     name = imported.name,
                     narrativeEntryCount = narrativeCount,
@@ -1345,6 +1733,10 @@ class ChatViewModel(
      * 手写而不是用生成式写法，是为了避免依赖较新的辅助接口 ——
      * 这一层换成依赖注入框架后会整体删掉，不值得为它引入不确定性。
      */
+    /** 把一张状态栏里的占位换成真名字。 */
+    private fun expandMacros(values: Map<String, StateValue>, charName: String) =
+        CardMacros.expand(values, CardPromptAssembler.DEFAULT_USER_NAME, charName)
+
     /** 把卡的概况整理成界面要显示的那几个数字。 */
     private fun summaryOf(source: CharacterCard, stateFieldCount: Int, noteCount: Int) = CardSummary(
         name = source.name,
@@ -1356,9 +1748,6 @@ class ChatViewModel(
     )
 
     private companion object {
-        /** 匹配触发词时往回看几条聊天。 */
-        const val RECENT_SCAN_MESSAGES = 4
-
         /** 没导卡时这一局的名字。 */
         const val UNTITLED_SESSION = "未命名"
     }
@@ -1370,6 +1759,7 @@ class ChatViewModel(
             credentialStore = container.credentialStore,
             selectionStore = container.selectionStore,
             settlementCoordinator = container.settlementCoordinator,
+            summaryCoordinator = container.summaryCoordinator,
             chatStore = container.chatStore,
         ) as T
     }

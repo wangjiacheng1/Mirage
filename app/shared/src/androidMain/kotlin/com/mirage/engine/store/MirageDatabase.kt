@@ -103,6 +103,27 @@ data class ReceiptEntity(
 )
 
 /**
+ * 剧情摘要表：一行就是一卷，盖住连续的若干轮。
+ *
+ * 行号自增，不拿「第几卷」当主键：几卷合并成一卷之后编号会重排，
+ * 拿它当主键就要在合并时改一串主键，而主键一动，所有引用都得跟着动。
+ *
+ * 摘要正文直接存文本。我们从不按内容查询，永远是整局取出来按顺序拼。
+ */
+@Entity(tableName = "story_volumes", indices = [Index("sessionId")])
+data class StoryVolumeEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val volumeIndex: Int,
+    val fromTurn: Int,
+    val toTurn: Int,
+    val text: String,
+    /** 是不是几卷合并来的「前情总览」。 */
+    val merged: Boolean,
+    val createdAt: Long,
+)
+
+/**
  * 存档列表的一行查询结果。
  *
  * 不复用 SessionEntity：那个带着整段卡原文，而列表用不上，
@@ -150,6 +171,9 @@ interface MirageDao {
     )
     suspend fun listSessions(): List<SessionSummaryRow>
 
+    @Query("UPDATE sessions SET cardJson = :cardJson, updatedAt = :updatedAt WHERE id = :sessionId")
+    suspend fun updateSessionCard(sessionId: Long, cardJson: String, updatedAt: Long)
+
     @Query("UPDATE sessions SET headMessageId = :headMessageId, updatedAt = :updatedAt WHERE id = :sessionId")
     suspend fun updateHead(sessionId: Long, headMessageId: Long, updatedAt: Long)
 
@@ -196,6 +220,18 @@ interface MirageDao {
     @Query("DELETE FROM settlement_receipts WHERE messageId IN (:messageIds)")
     suspend fun deleteReceiptsByMessageIds(messageIds: List<Long>)
 
+    @Insert
+    suspend fun insertVolume(volume: StoryVolumeEntity): Long
+
+    @Query("SELECT * FROM story_volumes WHERE sessionId = :sessionId ORDER BY fromTurn ASC")
+    suspend fun volumesOf(sessionId: Long): List<StoryVolumeEntity>
+
+    @Query("DELETE FROM story_volumes WHERE id IN (:volumeIds)")
+    suspend fun deleteVolumesByIds(volumeIds: List<Long>)
+
+    @Query("DELETE FROM story_volumes WHERE sessionId = :sessionId")
+    suspend fun deleteVolumes(sessionId: Long)
+
     @Query("DELETE FROM sessions WHERE id = :sessionId")
     suspend fun deleteSession(sessionId: Long)
 
@@ -218,8 +254,9 @@ interface MirageDao {
         MessageEntity::class,
         StateEventEntity::class,
         ReceiptEntity::class,
+        StoryVolumeEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class MirageDatabase : RoomDatabase() {
@@ -266,6 +303,38 @@ private val MIGRATION_1_2 = object : Migration(1, 2) {
 }
 
 /**
+ * 第 2 版到第 3 版：加一张剧情摘要表。
+ *
+ * 同样只是新增一张表，老的四张一个字节都不动 —— 最安全的那一类迁移。
+ *
+ * 🔴 建表语句必须和实体定义严丝合缝（列名、类型、可空性、主键、索引名）。
+ * 注意 merged 是 Boolean，在库里是 INTEGER NOT NULL，写成 TEXT 或漏掉
+ * NOT NULL 都会在升级时被 Room 当场比对出来并抛异常。
+ */
+private val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `story_volumes` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `sessionId` INTEGER NOT NULL,
+                `volumeIndex` INTEGER NOT NULL,
+                `fromTurn` INTEGER NOT NULL,
+                `toTurn` INTEGER NOT NULL,
+                `text` TEXT NOT NULL,
+                `merged` INTEGER NOT NULL,
+                `createdAt` INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        connection.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_story_volumes_sessionId` " +
+                "ON `story_volumes` (`sessionId`)",
+        )
+    }
+}
+
+/**
  * 打开（或第一次创建）本地数据库。
  *
  * 必须显式挂上每一个迁移。漏挂的话，装着旧版本的用户一升级就崩 ——
@@ -273,5 +342,5 @@ private val MIGRATION_1_2 = object : Migration(1, 2) {
  */
 fun createMirageDatabase(context: Context): MirageDatabase = Room
     .databaseBuilder(context, MirageDatabase::class.java, "mirage.db")
-    .addMigrations(MIGRATION_1_2)
+    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
     .build()

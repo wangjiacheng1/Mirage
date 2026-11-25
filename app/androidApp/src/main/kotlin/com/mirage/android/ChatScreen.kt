@@ -59,6 +59,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
     // 正在编辑 / 正在确认删除的那条。为 null 表示弹窗没开
     var editing by remember { mutableStateOf<TranscriptEntry?>(null) }
     var deleting by remember { mutableStateOf<TranscriptEntry?>(null) }
+    // 角色卡详情弹窗开着没有
+    var showCardDetail by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -94,6 +96,16 @@ fun ChatScreen(viewModel: ChatViewModel) {
             onDismissNotice = viewModel::dismissBackupNotice,
         )
 
+        //压缩历史区。
+        CompactionSection(
+            compactedTurnCount = state.compactedTurnCount,
+            volumeCount = state.volumes.size,
+            compacting = state.compacting,
+            notice = state.compactionNotice,
+            onCompact = viewModel::compactNow,
+            onDismissNotice = viewModel::dismissCompactionNotice,
+        )
+
         //存档列表区。
         SessionListSection(
             sessions = state.sessions,
@@ -108,6 +120,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
             failure = state.cardImportFailure,
             onImport = viewModel::importCard,
             onDismissFailure = viewModel::dismissCardImportFailure,
+            onShowDetail = { showCardDetail = true },
         )
 
         //状态栏。
@@ -167,6 +180,17 @@ fun ChatScreen(viewModel: ChatViewModel) {
             },
             onDismiss = { editing = null },
         )
+    }
+
+    if (showCardDetail) {
+        state.card?.let { card ->
+            CardDetailDialog(
+                card = card,
+                stateFieldCount = state.cardSummary?.stateFieldCount ?: 0,
+                onSave = { field, text -> viewModel.editCard(mapOf(field to text)) },
+                onDismiss = { showCardDetail = false },
+            )
+        }
     }
 
     deleting?.let { target ->
@@ -576,6 +600,17 @@ private fun StatusArea(state: ChatUiState) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // 一轮会发两次请求，上面那行只是正文那一笔。
+            // 后台算状态栏那笔用户看不见，不摆出来就等于账是不全的
+            state.latestSettlementUsage?.let { settlement ->
+                turnTotalUsageText(state.turn.usage, settlement)?.let { line ->
+                    Text(
+                        text = line,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             state.turn.servingProvider?.let {
                 Text(
                     text = stringResource(R.string.usage_served_by, it),
@@ -607,8 +642,9 @@ private fun finishNote(reason: FinishReason?, phase: ChatTurnPhase): String? {
     }
 }
 
+/** 一条调用失败该显示什么。压缩那边也用它，所以不是 private。 */
 @Composable
-private fun errorText(error: StreamError): String = stringResource(
+fun errorText(error: StreamError): String = stringResource(
     when (error.code) {
         StreamErrorCode.Unauthorized -> R.string.error_unauthorized
         StreamErrorCode.Forbidden -> R.string.error_forbidden

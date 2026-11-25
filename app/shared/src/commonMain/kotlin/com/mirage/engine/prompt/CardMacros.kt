@@ -1,5 +1,7 @@
 package com.mirage.engine.prompt
 
+import com.mirage.engine.state.StateValue
+
 /**
  * ============================================================================
  * CardMacros —— 把卡里的占位写法换成真名字
@@ -33,6 +35,33 @@ object CardMacros {
      *   读起来就是「你推开门」，这比硬塞一个假名字自然。
      * @param charName 角色名，直接取卡里的名字。
      */
+    /**
+     * 把一整张状态栏里的文字值也替换一遍。
+     *
+     * 卡里的初始值、以及结算规则里的说明，都可能带着占位。
+     * 不替换的话，状态栏上会直接显示出 `{{user}}` 这种东西。
+     */
+    fun expand(
+        values: Map<String, StateValue>,
+        userName: String,
+        charName: String,
+    ): Map<String, StateValue> = values.mapValues { (_, value) ->
+        when (value) {
+            is StateValue.StringValue -> StateValue.StringValue(expand(value.value, userName, charName))
+            is StateValue.ArrayValue -> StateValue.ArrayValue(
+                value.items.map { item ->
+                    if (item is StateValue.StringValue) {
+                        StateValue.StringValue(expand(item.value, userName, charName))
+                    } else {
+                        item
+                    }
+                },
+            )
+
+            else -> value
+        }
+    }
+
     fun expand(text: String, userName: String, charName: String): String {
         if (text.isEmpty()) return text
         var result = text

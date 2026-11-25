@@ -67,4 +67,34 @@ data class TokenUsage(
         } else {
             this
         }
+
+    /**
+     * 把两次调用的用量加起来。
+     *
+     * 用在「这一轮一共花了多少」上：一轮里会发两次请求（写正文一次、
+     * 算状态栏一次），两笔分开看不出总账。
+     *
+     * 这里和 [mergeWith] 是两件完全不同的事，别混用：
+     * [mergeWith] 是**同一次调用**的数据分几帧到达，后到的补全先到的；
+     * 这里是**两次不同的调用**，数字必须真的相加。
+     *
+     * 可空字段的处理：两边都没有就还是没有，只有一边有就用那一边的 ——
+     * 把缺失当 0 相加会让「没拿到数据」变成一个看起来很确定的数字。
+     * 相加前先给两边补一次总数，否则一边给了总数、另一边只给了两侧明细时，
+     * 明细那边会被算成 0。
+     */
+    operator fun plus(other: TokenUsage): TokenUsage {
+        val a = withDerivedTotal()
+        val b = other.withDerivedTotal()
+        return TokenUsage(
+            promptTokens = sum(a.promptTokens, b.promptTokens),
+            completionTokens = sum(a.completionTokens, b.completionTokens),
+            totalTokens = sum(a.totalTokens, b.totalTokens),
+            reasoningTokens = sum(a.reasoningTokens, b.reasoningTokens),
+            cost = if (a.cost == null && b.cost == null) null else (a.cost ?: 0.0) + (b.cost ?: 0.0),
+        )
+    }
+
+    private fun sum(a: Int?, b: Int?): Int? =
+        if (a == null && b == null) null else (a ?: 0) + (b ?: 0)
 }

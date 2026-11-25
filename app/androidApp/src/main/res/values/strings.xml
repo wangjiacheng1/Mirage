@@ -53,6 +53,7 @@
     <string name="usage_cost">费用 %1$s</string>
     <string name="usage_unavailable">服务方未返回用量</string>
     <string name="usage_served_by">实际承接：%1$s</string>
+    <string name="usage_turn_total">本轮合计 %1$d（正文 %2$d + 结算 %3$d）</string>
 
     <!-- 停止原因 -->
     <string name="finish_length">回复因长度上限被截断。可尝试关闭思考或缩短上下文。</string>
@@ -154,6 +155,32 @@
     <string name="message_delete_title">删除这条</string>
     <string name="message_delete_body">这条以及后面接着的内容会一起删除，无法恢复。</string>
 
+    <!-- 角色卡查看与编辑 -->
+    <string name="card_detail">查看角色卡</string>
+    <string name="card_detail_title">角色卡</string>
+    <string name="card_detail_close">关闭</string>
+    <string name="card_field_edit">编辑</string>
+    <string name="card_field_empty">（空）</string>
+    <string name="card_field_chars">%1$d 字</string>
+    <string name="card_worldbook">世界观设定（%1$d 条）</string>
+    <string name="card_worldbook_entry">%1$s · %2$d 字</string>
+    <string name="card_worldbook_always">每轮都带</string>
+    <string name="card_worldbook_keys">触发词：%1$s</string>
+    <string name="card_worldbook_none">无触发词</string>
+    <string name="card_worldbook_readonly">世界观设定和状态初值暂不支持在这里修改：改它们会牵动状态栏的字段清单，而清单一变，已经记下的数值变化就对不上了。</string>
+    <string name="card_state_fields">状态栏字段：%1$d 项</string>
+
+    <!-- 各字段是什么、该写什么 -->
+    <string name="card_hint_name">角色名。会替换设定里的 {{char}}。</string>
+    <string name="card_hint_description">角色的主要设定：身份、外貌、背景。模型最主要的依据就是这一段。</string>
+    <string name="card_hint_personality">性格与行为习惯。决定他遇事会怎么反应。</string>
+    <string name="card_hint_scenario">当前处境：时间、地点、正在发生什么。</string>
+    <string name="card_hint_first_mes">开场白。导入时直接显示，不花钱也不调模型。</string>
+    <string name="card_hint_mes_example">对话示例。用 &lt;START&gt; 分隔几段，每段写成「{{user}}: …」「{{char}}: …」。这是控制语气最有效的东西，比任何「请用某某语气」都管用。</string>
+    <string name="card_hint_system_prompt">卡作者写的全局要求，排在所有设定最前面。</string>
+    <string name="card_hint_post_history">放在对话最后的要求，离模型最近，适合写「每轮该怎么写」。</string>
+    <string name="card_hint_creator_notes">作者给人看的备注，不会发给模型。</string>
+
     <!-- 备份 -->
     <string name="backup_title">备份</string>
     <string name="backup_export">导出</string>
@@ -164,6 +191,17 @@
     <string name="backup_error_malformed">这个文件不是有效的备份文件。</string>
     <string name="backup_error_version">这份备份来自更新版本的应用，当前版本读不了。</string>
     <string name="backup_error_unreadable">读写文件失败，请换一个位置再试。</string>
+
+    <string name="compaction_title">压缩历史</string>
+    <string name="compaction_action">压缩</string>
+    <string name="compaction_running">压缩中…</string>
+    <string name="compaction_state">已有 %1$d 卷摘要，已压缩较早的 %2$d 轮对话</string>
+    <string name="compaction_state_none">还没压缩过，全部对话都按原文发送</string>
+    <string name="compaction_lossy_notice">压缩会把旧对话总结成摘要，细节会有损失。原文不会被删除，仍可翻阅和编辑。重要的故事建议先导出备份。</string>
+    <string name="compaction_done">已把较早的 %1$d 轮对话压成一卷摘要。这些轮次之后只发摘要，不再发原文。</string>
+    <string name="compaction_merged">摘要攒得太多了，已把 %1$d 卷合并成一卷前情总览。</string>
+    <string name="compaction_nothing">现在没有可压缩的内容。最近若干轮会保留原文，需要再多聊一些才会有可压的部分。</string>
+    <string name="compaction_failed">这次压缩没有成功，原文一个字都没有改动，可以稍后再试。</string>
 
     <!-- 存档 -->
     <string name="session_title">存档（%1$d 局）</string>

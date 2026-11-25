@@ -6,6 +6,7 @@ import com.mirage.engine.state.ChangeOperation
 import com.mirage.engine.state.GuardFailureCode
 import com.mirage.engine.state.StateEvent
 import com.mirage.engine.state.StateValueJson
+import com.mirage.engine.summary.StoryVolume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -60,6 +61,12 @@ class RoomChatStore(private val dao: MirageDao) : ChatStore {
      * 更新最新条的messageId，
      * 记下这一局聊到哪一条了。
      */
+    /** 换掉这一局用的卡原文。只动卡这一列。 */
+    override suspend fun updateSessionCard(sessionId: Long, cardJson: String, updatedAt: Long) =
+        withContext(Dispatchers.IO) {
+            dao.updateSessionCard(sessionId, cardJson, updatedAt)
+        }
+
     /** 读某一局。 */
     override suspend fun loadSession(sessionId: Long): SessionRecord? = withContext(Dispatchers.IO) {
         dao.sessionById(sessionId)?.let { entity ->
@@ -241,6 +248,44 @@ class RoomChatStore(private val dao: MirageDao) : ChatStore {
         (dao.maxEventSequence(sessionId) ?: 0L) + 1
     }
 
+    /** 存一卷剧情摘要。 */
+    override suspend fun saveVolume(sessionId: Long, volume: StoryVolume, createdAt: Long): Long =
+        withContext(Dispatchers.IO) {
+            dao.insertVolume(
+                StoryVolumeEntity(
+                    sessionId = sessionId,
+                    volumeIndex = volume.index,
+                    fromTurn = volume.fromTurn,
+                    toTurn = volume.toTurn,
+                    text = volume.text,
+                    merged = volume.merged,
+                    createdAt = createdAt,
+                ),
+            )
+        }
+
+    /** 读这一局已经压好的卷，按轮次先后。 */
+    override suspend fun volumesOf(sessionId: Long): List<StoredVolume> =
+        withContext(Dispatchers.IO) {
+            dao.volumesOf(sessionId).map { entity ->
+                StoredVolume(
+                    id = entity.id,
+                    volume = StoryVolume(
+                        index = entity.volumeIndex,
+                        fromTurn = entity.fromTurn,
+                        toTurn = entity.toTurn,
+                        text = entity.text,
+                        merged = entity.merged,
+                    ),
+                    createdAt = entity.createdAt,
+                )
+            }
+        }
+
+    override suspend fun deleteVolumes(volumeIds: List<Long>) = withContext(Dispatchers.IO) {
+        if (volumeIds.isNotEmpty()) dao.deleteVolumesByIds(volumeIds)
+    }
+
     /** 删掉这一局的全部数据。 */
     override suspend fun deleteSession(sessionId: Long) = withContext(Dispatchers.IO) {
         // 顺序无所谓，三张表之间没有外键约束。
@@ -248,6 +293,7 @@ class RoomChatStore(private val dao: MirageDao) : ChatStore {
         // 报的是 SQL 层的约束错误，很难看出是哪条业务操作引起的
         dao.deleteStateEvents(sessionId)
         dao.deleteReceipts(sessionId)
+        dao.deleteVolumes(sessionId)
         dao.deleteMessages(sessionId)
         dao.deleteSession(sessionId)
     }

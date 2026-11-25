@@ -6,6 +6,7 @@ import com.mirage.engine.credential.CredentialStore
 import com.mirage.engine.llm.ChatCompletionClient
 import com.mirage.engine.net.createAndroidTransport
 import com.mirage.engine.settlement.SettlementCoordinator
+import com.mirage.engine.summary.SummaryCoordinator
 import com.mirage.engine.store.ChatStore
 import com.mirage.engine.store.createRoomChatStore
 
@@ -33,7 +34,9 @@ class MirageContainer(context: Context, debugBuild: Boolean) {
      * 诊断输出只在调试构建下开启。
      */
     val chatClient: ChatCompletionClient = ChatCompletionClient(
-        createAndroidTransport(enableLogging = debugBuild),
+        createAndroidTransport(
+            enableLogging = debugBuild && AppSwitches.ENABLE_NETWORK_LOG_IN_DEBUG,
+        ),
     )
 
     /**
@@ -43,6 +46,14 @@ class MirageContainer(context: Context, debugBuild: Boolean) {
      * 各建一套只会多出一份连接池和一份需要单独维护的解析逻辑。
      */
     val settlementCoordinator: SettlementCoordinator = SettlementCoordinator(chatClient)
+
+    /**
+     * 摘要压缩执行器。
+     *
+     * 同样复用那个对话客户端 —— 它和结算一样是「发一次、把文字收回来」，
+     * 没有任何理由再建一套。
+     */
+    val summaryCoordinator: SummaryCoordinator = SummaryCoordinator(chatClient)
 
     /** 存档读写。角色卡、对话记录、状态栏变化都从这里进出数据库。 */
     val chatStore: ChatStore = createRoomChatStore(context)

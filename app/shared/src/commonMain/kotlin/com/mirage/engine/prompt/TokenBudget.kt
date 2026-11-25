@@ -13,6 +13,8 @@ data class TokenFit(
     val messages: List<ChatMessage>,
     val droppedCount: Int,
     val estimatedTokens: Int,
+    /** 示范对话有没有被整体丢掉。界面要如实说出来。 */
+    val droppedExamples: Boolean = false,
 )
 
 /**
@@ -112,11 +114,29 @@ object TokenBudget {
         leading: List<ChatMessage>,
         history: List<ChatMessage>,
         tail: List<ChatMessage>,
+        /**
+         * 卡里的示范对话。空间不够时**整组丢掉**，而且比历史先丢。
+         *
+         * 为什么整组丢而不是丢一半：示范对话是一问一答配对出现的，
+         * 只留下半边会变成一段没头没尾的话，比没有更糟。
+         *
+         * 为什么比历史先丢：示范是锦上添花，真实剧情丢了就接不上了。
+         */
+        examples: List<ChatMessage> = emptyList(),
         budget: Int = budgetOf(),
     ): TokenFit {
         val fixedCost = estimate(leading) + estimate(tail)
+
+        // 先试着带上示范。它加上之后连最近一轮历史都放不下的话，就整组不要
+        val exampleCost = estimate(examples)
+        val historyFloor = history.lastOrNull()
+            ?.let { estimate(it.content) + PER_MESSAGE_OVERHEAD }
+            ?: 0
+        val keepExamples = examples.isNotEmpty() &&
+            fixedCost + exampleCost + historyFloor <= budget
+
         val kept = ArrayDeque<ChatMessage>()
-        var used = fixedCost
+        var used = fixedCost + if (keepExamples) exampleCost else 0
 
         // 从最近的往回加，加到放不下为止。越近的内容对当前剧情越要紧
         for (message in history.asReversed()) {
@@ -127,9 +147,12 @@ object TokenBudget {
         }
 
         return TokenFit(
-            messages = leading + kept + tail,
+            // 示范排在真实历史之前：它示范的是「怎么说话」，
+            // 而紧挨着当前这轮的应该是真实剧情
+            messages = leading + (if (keepExamples) examples else emptyList()) + kept + tail,
             droppedCount = history.size - kept.size,
             estimatedTokens = used,
+            droppedExamples = examples.isNotEmpty() && !keepExamples,
         )
     }
 

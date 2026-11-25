@@ -45,6 +45,7 @@ fun CardImportSection(
     failure: CardParseFailure?,
     onImport: (String) -> Unit,
     onDismissFailure: () -> Unit,
+    onShowDetail: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -86,10 +87,18 @@ fun CardImportSection(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row {
+            // 有卡才给「查看」入口。没卡时点进去是一片空白，不如不给
+            if (summary != null) {
+                TextButton(onClick = onShowDetail) {
+                    Text(stringResource(R.string.card_detail))
+                }
+            }
             // 限定只挑 JSON 文件。各家文件管理器对类型过滤的支持不一致，
             // 所以额外带上通用类型兜底，否则在某些机器上会一个文件都看不见
             TextButton(onClick = { picker.launch(arrayOf("application/json", "text/*", "*/*")) }) {
                 Text(stringResource(R.string.card_import))
+            }
             }
         }
 

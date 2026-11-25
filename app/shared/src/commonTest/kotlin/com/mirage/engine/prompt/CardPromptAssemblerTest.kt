@@ -106,11 +106,64 @@ class CardPromptAssemblerTest {
     }
 
     @Test
-    fun 放在最后的要求单独拿出来() {
+    fun 放在最后的要求单独拿出来且用对话角色发() {
         val prompt = CardPromptAssembler.buildNarrativePrompt(card)
 
         assertEquals("放在最后的要求", prompt.trailingSystemMessage?.content)
-        assertEquals(ChatRole.System, prompt.trailingSystemMessage?.role)
+        // 🔴 用 user 而不是 system：不少模型只认真对待第一条 system 消息，
+        // 夹在对话中间的会被轻描淡写带过。而这条偏偏是控制语气和结构的那一句，
+        // 失效了最难察觉 —— 正文「差不多但不太对」，却说不出哪里不对
+        assertEquals(ChatRole.User, prompt.trailingSystemMessage?.role)
+    }
+
+    @Test
+    fun 通用叙事要求排在所有卡设定之前() {
+        val prompt = CardPromptAssembler.buildNarrativePrompt(card, globalPreset = "通用要求")
+        val text = prompt.systemMessages.first().content
+
+        // 顺序就是优先级：后面的更具体、更贴近这张卡，冲突时以卡为准
+        assertTrue(text.indexOf("通用要求") < text.indexOf("系统要求"))
+        assertTrue(text.indexOf("系统要求") < text.indexOf("角色设定"))
+    }
+
+    @Test
+    fun 不给通用要求时一个字都不加() {
+        val text = promptText()
+
+        assertTrue(!text.contains("通用要求"))
+    }
+
+    @Test
+    fun 前情提要排在设定之后状态栏之前() {
+        val prompt = CardPromptAssembler.buildNarrativePrompt(
+            card = card,
+            stateValues = mapOf("某组/甲" to StateValue.IntValue(60)),
+            storySummary = "前情提要内容",
+        )
+        val text = prompt.systemMessages.first().content
+
+        // 先知道「这是谁」，再知道「发生过什么」，最后才是「现在的数值是多少」
+        assertTrue(text.indexOf("角色设定") < text.indexOf("前情提要内容"))
+        assertTrue(text.indexOf("前情提要内容") < text.indexOf("某组/甲"))
+    }
+
+    @Test
+    fun 没压过时不带前情提要段() {
+        val text = promptText()
+
+        assertTrue(!text.contains("前情提要"))
+    }
+
+    @Test
+    fun 通用要求里的占位也会被替换() {
+        val result = CharacterCardParser.parse("""{"name": "某角色", "description": "设定"}""")
+        assertTrue(result is CardParseResult.Success)
+
+        val text = CardPromptAssembler
+            .buildNarrativePrompt(result.card, globalPreset = "{{user}}是玩家")
+            .systemMessages.first().content
+
+        assertTrue(text.contains("你是玩家"), "通用要求和卡设定走同一套替换，不能漏掉")
     }
 
     @Test
@@ -176,5 +229,52 @@ class CardMacrosTest {
             .systemMessages.first().content
 
         assertEquals("你面对某角色。", text)
+    }
+}
+
+/**
+ * 状态值里的占位替换。
+ *
+ * 这一组是真机上发现的：状态栏里偶尔冒出 `{{user}}` 字样。
+ * 根因是卡自带的结算规则里写着这个占位，而我们只给开场消息做了替换，
+ * 模型把这几个字当成真内容写进了状态栏。
+ */
+class CardMacrosStateValueTest {
+
+    @Test
+    fun 文字项里的占位被替换() {
+        val values = mapOf("某组/甲" to StateValue.StringValue("{{user}}的同伴"))
+
+        val expanded = CardMacros.expand(values, userName = "你", charName = "某角色")
+
+        assertEquals(StateValue.StringValue("你的同伴"), expanded["某组/甲"])
+    }
+
+    @Test
+    fun 列表里的每一项都替换() {
+        val values = mapOf(
+            "某组/列表" to StateValue.ArrayValue(
+                listOf(StateValue.StringValue("{{char}}的剑"), StateValue.StringValue("普通石头")),
+            ),
+        )
+
+        val expanded = CardMacros.expand(values, userName = "你", charName = "某角色")
+
+        assertEquals(
+            StateValue.ArrayValue(
+                listOf(StateValue.StringValue("某角色的剑"), StateValue.StringValue("普通石头")),
+            ),
+            expanded["某组/列表"],
+        )
+    }
+
+    @Test
+    fun 数字和是否原样不动() {
+        val values = mapOf(
+            "某组/数" to StateValue.IntValue(60),
+            "某组/否" to StateValue.BoolValue(false),
+        )
+
+        assertEquals(values, CardMacros.expand(values, "你", "某角色"))
     }
 }

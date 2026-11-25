@@ -2,6 +2,7 @@ package com.mirage.engine.store
 
 import com.mirage.engine.history.StoredMessage
 import com.mirage.engine.state.StateEvent
+import com.mirage.engine.summary.StoryVolume
 
 /**
  * 一局游戏的存档。
@@ -59,6 +60,17 @@ data class StoredReceipt(
 )
 
 /**
+ * 存下来的一卷剧情摘要。
+ *
+ * @property id 数据库行号。几卷合并成一卷之后，要按它把被合并的那几卷删掉。
+ */
+data class StoredVolume(
+    val id: Long,
+    val volume: StoryVolume,
+    val createdAt: Long,
+)
+
+/**
  * 存档的读写入口。
  *
  * 所有碰数据库的操作都从这里走。界面和引擎都只认这个接口，
@@ -75,6 +87,14 @@ interface ChatStore {
 
     /** 读最近玩过的那一局。没有任何存档时返回 null。 */
     suspend fun loadLatestSession(): SessionRecord?
+
+    /**
+     * 换掉这一局用的卡原文。
+     *
+     * 改卡时用。**只动卡这一列**，对话、数值、回执都不碰 ——
+     * 改几个字就把正在玩的进度清掉，没人受得了。
+     */
+    suspend fun updateSessionCard(sessionId: Long, cardJson: String, updatedAt: Long)
 
     /** 读某一局。切换存档时用。 */
     suspend fun loadSession(sessionId: Long): SessionRecord?
@@ -132,6 +152,20 @@ interface ChatStore {
 
     /** 读这一局的全部结算回执。 */
     suspend fun receiptsOf(sessionId: Long): List<StoredReceipt>
+
+    /** 存一卷剧情摘要，返回它的行号。 */
+    suspend fun saveVolume(sessionId: Long, volume: StoryVolume, createdAt: Long): Long
+
+    /** 这一局已经压好的卷，按轮次先后。 */
+    suspend fun volumesOf(sessionId: Long): List<StoredVolume>
+
+    /**
+     * 删掉指定的那几卷。
+     *
+     * 只在「几卷合并成一卷前情总览」时用：先存合并出来的新卷，再删掉旧的。
+     * 顺序不能反 —— 先删后存的话，中间一旦失败，那几十轮剧情就彻底没了。
+     */
+    suspend fun deleteVolumes(volumeIds: List<Long>)
 
     /** 读这一局的所有变化记录。 */
     suspend fun stateEventsOf(sessionId: Long): List<StateEvent>

@@ -2,6 +2,7 @@ package com.mirage.engine.store
 
 import com.mirage.engine.history.StoredMessage
 import com.mirage.engine.state.StateEvent
+import com.mirage.engine.summary.StoryVolume
 
 /**
  * 存在内存里的存档，专供测试用。
@@ -19,11 +20,13 @@ class InMemoryChatStore : ChatStore {
         val messages: MutableList<StoredMessage> = mutableListOf(),
         val events: MutableList<StateEvent> = mutableListOf(),
         val receipts: MutableMap<Long, StoredReceipt> = mutableMapOf(),
+        val volumes: MutableList<StoredVolume> = mutableListOf(),
     )
 
     private val sessions = linkedMapOf<Long, Row>()
     private var nextSessionId = 1L
     private var nextMessageId = 1L
+    private var nextVolumeId = 1L
 
     override suspend fun createSession(title: String, cardJson: String?, createdAt: Long): Long {
         val id = nextSessionId++
@@ -40,6 +43,13 @@ class InMemoryChatStore : ChatStore {
     override suspend fun listSessions(): List<SessionSummary> = sessions.entries
         .sortedByDescending { it.value.updatedAt }
         .map { SessionSummary(it.key, it.value.title, it.value.updatedAt, it.value.messages.size) }
+
+    override suspend fun updateSessionCard(sessionId: Long, cardJson: String, updatedAt: Long) {
+        sessions[sessionId]?.apply {
+            this.cardJson = cardJson
+            this.updatedAt = updatedAt
+        }
+    }
 
     override suspend fun updateHead(sessionId: Long, headMessageId: Long, updatedAt: Long) {
         sessions[sessionId]?.apply {
@@ -97,6 +107,19 @@ class InMemoryChatStore : ChatStore {
 
     override suspend fun nextEventSequence(sessionId: Long): Long =
         (sessions[sessionId]?.events?.maxOfOrNull { it.sequence } ?: 0L) + 1
+
+    override suspend fun saveVolume(sessionId: Long, volume: StoryVolume, createdAt: Long): Long {
+        val id = nextVolumeId++
+        sessions[sessionId]?.volumes?.add(StoredVolume(id = id, volume = volume, createdAt = createdAt))
+        return id
+    }
+
+    override suspend fun volumesOf(sessionId: Long): List<StoredVolume> =
+        sessions[sessionId]?.volumes?.sortedBy { it.volume.fromTurn } ?: emptyList()
+
+    override suspend fun deleteVolumes(volumeIds: List<Long>) {
+        sessions.values.forEach { row -> row.volumes.removeAll { it.id in volumeIds } }
+    }
 
     override suspend fun deleteSession(sessionId: Long) {
         sessions.remove(sessionId)
