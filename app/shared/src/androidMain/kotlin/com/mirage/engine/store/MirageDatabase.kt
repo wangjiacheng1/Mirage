@@ -121,6 +121,14 @@ data class StoryVolumeEntity(
     /** 是不是几卷合并来的「前情总览」。 */
     val merged: Boolean,
     val createdAt: Long,
+    /**
+     * 压这一卷时，对话停在哪一条消息上。
+     *
+     * 发送前靠它判断这卷还算不算数：那条消息不在当前这条线上，
+     * 说明已经切到别的分支了，这卷讲的是另一条线上的事。
+     * 第 3 版升上来的旧数据这里是 null，一律当它算数。
+     */
+    val basedOnMessageId: Long? = null,
 )
 
 /**
@@ -256,7 +264,7 @@ interface MirageDao {
         ReceiptEntity::class,
         StoryVolumeEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class MirageDatabase : RoomDatabase() {
@@ -335,6 +343,23 @@ private val MIGRATION_2_3 = object : Migration(2, 3) {
 }
 
 /**
+ * 第 3 版到第 4 版：摘要卷记下「压它的时候停在哪条消息上」。
+ *
+ * 加一列，老数据留空。留空的含义是「不知道当时停在哪」，读取时一律当它仍然算数 ——
+ * 不能当它作废，否则用户升级之后原先压好的卷会全部失效，上下文一下子涨回去。
+ *
+ * 用 ALTER TABLE ADD COLUMN 而不是重建表：这一列没有默认值要求，
+ * 加出来的就是 NULL，正好对上「旧数据不知道」。SQLite 加列不会重写整张表。
+ */
+private val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL(
+            "ALTER TABLE `story_volumes` ADD COLUMN `basedOnMessageId` INTEGER",
+        )
+    }
+}
+
+/**
  * 打开（或第一次创建）本地数据库。
  *
  * 必须显式挂上每一个迁移。漏挂的话，装着旧版本的用户一升级就崩 ——
@@ -342,5 +367,5 @@ private val MIGRATION_2_3 = object : Migration(2, 3) {
  */
 fun createMirageDatabase(context: Context): MirageDatabase = Room
     .databaseBuilder(context, MirageDatabase::class.java, "mirage.db")
-    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
     .build()

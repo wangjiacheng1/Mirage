@@ -15,6 +15,9 @@ package com.mirage.engine.summary
  * @property index 第几卷，从 1 开始。只用来显示和排序。
  * @property merged 是不是多卷合并来的「前情总览」。卷攒多了会再合并一次，
  *   那一次是唯一允许二次总结的场合，所以要能分辨出来。
+ * @property basedOnMessageId 压这一卷的时候，对话停在哪一条消息上。
+ *   为 null 表示这卷是旧版本存的、不知道当时停在哪 —— 那就一律当它仍然算数，
+ *   不然老用户升级后已经压好的卷会突然全部失效。
  */
 data class StoryVolume(
     val index: Int,
@@ -22,6 +25,7 @@ data class StoryVolume(
     val toTurn: Int,
     val text: String,
     val merged: Boolean = false,
+    val basedOnMessageId: Long? = null,
 ) {
     /** 这一卷盖住了几轮。 */
     val turnCount: Int get() = toTurn - fromTurn + 1

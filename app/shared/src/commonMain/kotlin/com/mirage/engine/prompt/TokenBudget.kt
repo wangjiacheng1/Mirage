@@ -15,7 +15,43 @@ data class TokenFit(
     val estimatedTokens: Int,
     /** 示范对话有没有被整体丢掉。界面要如实说出来。 */
     val droppedExamples: Boolean = false,
+    /**
+     * 这次发出去的内容，各部分分别占了多少。
+     *
+     * 单独报出来是为了让人能看出「上下文被谁吃掉了」——
+     * 只给一个总数的话，看到「快满了」也不知道该压历史、
+     * 还是该把卡里那段几千字的设定删一删。
+     */
+    val breakdown: TokenBreakdown = TokenBreakdown(),
 )
+
+/**
+ * 一次请求里各部分占的长度。
+ *
+ * @property leading 开头的设定：角色设定、命中的世界观条目、前情提要、状态栏。
+ * @property examples 卡里的示范对话。被整组丢掉时是 0。
+ * @property history 中间保留下来的来回对话。
+ * @property tail 这一轮说的话和队尾那条要求。
+ * @property budget 这次最多能用多少。用来算占比。
+ */
+data class TokenBreakdown(
+    val leading: Int = 0,
+    val examples: Int = 0,
+    val history: Int = 0,
+    val tail: Int = 0,
+    val budget: Int = 0,
+) {
+    val total: Int get() = leading + examples + history + tail
+
+    /**
+     * 用掉了预算的百分之几。预算为 0 时返回 0。
+     *
+     * 可能超过 100：光是不能丢的部分就超了预算时，我们照样发出去
+     * （那时丢什么都没用），所以这个数字不夹在 100 以内 ——
+     * 夹住就看不出到底超了多少。
+     */
+    val usedPercent: Int get() = if (budget <= 0) 0 else total * 100 / budget
+}
 
 /**
  * 控制每次请求的长度，别超过模型的上下文上限。
@@ -125,7 +161,9 @@ object TokenBudget {
         examples: List<ChatMessage> = emptyList(),
         budget: Int = budgetOf(),
     ): TokenFit {
-        val fixedCost = estimate(leading) + estimate(tail)
+        val leadingCost = estimate(leading)
+        val tailCost = estimate(tail)
+        val fixedCost = leadingCost + tailCost
 
         // 先试着带上示范。它加上之后连最近一轮历史都放不下的话，就整组不要
         val exampleCost = estimate(examples)
@@ -153,6 +191,15 @@ object TokenBudget {
             droppedCount = history.size - kept.size,
             estimatedTokens = used,
             droppedExamples = examples.isNotEmpty() && !keepExamples,
+            breakdown = TokenBreakdown(
+                leading = leadingCost,
+                examples = if (keepExamples) exampleCost else 0,
+                // 用减的而不是把保留下来的再估一遍：上面是边加边判断的，
+                // 重估一次有可能和它对不上，那样分项加起来就不等于总数了
+                history = used - fixedCost - (if (keepExamples) exampleCost else 0),
+                tail = tailCost,
+                budget = budget,
+            ),
         )
     }
 

@@ -11,8 +11,6 @@
 
     <!-- 配置区 -->
     <string name="config_title">模型配置</string>
-    <string name="config_show">展开配置</string>
-    <string name="config_hide">收起配置</string>
     <string name="config_provider">服务来源</string>
     <string name="config_model">模型名称</string>
     <string name="config_model_hint">填写服务方提供的模型标识</string>
@@ -187,10 +185,34 @@
     <string name="backup_import">导入</string>
     <string name="backup_exported">已导出 %1$d 局存档，约 %2$d KB。文件中不含访问密钥，换机后需要重新填写。</string>
     <string name="backup_imported">已导入 %1$d 局存档、%2$d 条消息。导入是新增，原有存档未受影响。</string>
+    <string name="backup_imported_extra">\n另带回 %1$d 张结算回执、%2$d 卷剧情摘要。</string>
     <string name="backup_imported_skipped">\n其中 %1$d 条内容因数据不完整被跳过。</string>
     <string name="backup_error_malformed">这个文件不是有效的备份文件。</string>
     <string name="backup_error_version">这份备份来自更新版本的应用，当前版本读不了。</string>
     <string name="backup_error_unreadable">读写文件失败，请换一个位置再试。</string>
+
+    <string name="context_usage_title">上下文占用</string>
+    <string name="context_usage_total">%1$d / %2$d（%3$d%%）</string>
+    <string name="context_usage_estimated">数字为本地估算，与服务方计费口径会有出入。</string>
+    <string name="context_part_leading">设定</string>
+    <string name="context_part_examples">示范</string>
+    <string name="context_part_history">历史</string>
+    <string name="context_part_tail">本轮</string>
+
+    <string name="tab_story">故事</string>
+    <string name="tab_character">角色</string>
+    <string name="tab_settings">我的</string>
+    <string name="settings_section_channel">模型通道</string>
+
+    <string name="preset_title">通用叙事要求</string>
+    <string name="preset_state_default">当前为出厂默认</string>
+    <string name="preset_state_custom">当前为你改过的版本</string>
+    <string name="preset_disabled_hint">已关闭：只发送角色卡自己的内容。正文可能会变短、爱做点评。</string>
+    <string name="preset_edit">编辑</string>
+    <string name="preset_save">保存</string>
+    <string name="preset_reset">恢复默认</string>
+    <string name="preset_edit_title">改写通用叙事要求</string>
+    <string name="preset_edit_hint">这段话写在角色卡设定之前，管的是「怎么写」：篇幅、由谁扮演、玩家那句话该怎么理解。和卡冲突时以卡为准。改完下一轮生效，不影响已经聊过的内容。</string>
 
     <string name="compaction_title">压缩历史</string>
     <string name="compaction_action">压缩</string>

@@ -260,6 +260,7 @@ class RoomChatStore(private val dao: MirageDao) : ChatStore {
                     text = volume.text,
                     merged = volume.merged,
                     createdAt = createdAt,
+                    basedOnMessageId = volume.basedOnMessageId,
                 ),
             )
         }
@@ -276,6 +277,7 @@ class RoomChatStore(private val dao: MirageDao) : ChatStore {
                         toTurn = entity.toTurn,
                         text = entity.text,
                         merged = entity.merged,
+                        basedOnMessageId = entity.basedOnMessageId,
                     ),
                     createdAt = entity.createdAt,
                 )

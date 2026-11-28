@@ -4,6 +4,7 @@ import com.mirage.engine.state.ChangeOperation
 import com.mirage.engine.state.GuardFailureCode
 import com.mirage.engine.state.StateEvent
 import com.mirage.engine.state.StateValueJson
+import com.mirage.engine.summary.StoryVolume
 import kotlinx.serialization.json.Json
 
 /** 读备份文件的结果。 */
@@ -31,10 +32,14 @@ data class BackupImportSummary(
     val sessionCount: Int = 0,
     val messageCount: Int = 0,
     val stateEventCount: Int = 0,
+    val receiptCount: Int = 0,
+    val volumeCount: Int = 0,
     /** 上一条找不到、接不上树的消息。它们连同后面的内容一起被跳过。 */
     val skippedMessageCount: Int = 0,
     /** 挂在被跳过消息上的数值变化。 */
     val skippedEventCount: Int = 0,
+    /** 挂在被跳过消息上的结算回执。 */
+    val skippedReceiptCount: Int = 0,
 )
 
 /**
@@ -88,6 +93,31 @@ object BackupService {
                         adjustedBy = event.adjustedBy?.name,
                     )
                 },
+                receipts = store.receiptsOf(summary.id).map { receipt ->
+                    BackupReceipt(
+                        messageId = receipt.messageId,
+                        turn = receipt.turn,
+                        status = receipt.status,
+                        summary = receipt.summary,
+                        changesJson = receipt.changesJson,
+                        failuresJson = receipt.failuresJson,
+                        usageTotalTokens = receipt.usageTotalTokens,
+                        usageCost = receipt.usageCost,
+                        attempt = receipt.attempt,
+                        createdAt = receipt.createdAt,
+                    )
+                },
+                volumes = store.volumesOf(summary.id).map { stored ->
+                    BackupVolume(
+                        index = stored.volume.index,
+                        fromTurn = stored.volume.fromTurn,
+                        toTurn = stored.volume.toTurn,
+                        text = stored.volume.text,
+                        merged = stored.volume.merged,
+                        createdAt = stored.createdAt,
+                        basedOnMessageId = stored.volume.basedOnMessageId,
+                    )
+                },
             )
         }
         return BackupDocument(exportedAt = exportedAt, sessions = sessions)
@@ -123,8 +153,11 @@ object BackupService {
     suspend fun import(store: ChatStore, document: BackupDocument): BackupImportSummary {
         var messageCount = 0
         var eventCount = 0
+        var receiptCount = 0
+        var volumeCount = 0
         var skippedMessages = 0
         var skippedEvents = 0
+        var skippedReceipts = 0
 
         document.sessions.forEach { session ->
             val sessionId = store.createSession(
@@ -163,6 +196,52 @@ object BackupService {
             store.appendStateEvents(sessionId, events)
             eventCount += events.size
 
+            // 回执是按消息编号挂的，和数值变化一样要跟着换成新分配的编号
+            session.receipts.forEach { receipt ->
+                val messageId = idMap[receipt.messageId]
+                if (messageId == null) {
+                    // 它挂的那条回复没能导进来，这张回执就没有归属了
+                    skippedReceipts += 1
+                    return@forEach
+                }
+                store.saveReceipt(
+                    sessionId = sessionId,
+                    receipt = StoredReceipt(
+                        messageId = messageId,
+                        turn = receipt.turn,
+                        status = receipt.status,
+                        summary = receipt.summary,
+                        changesJson = receipt.changesJson,
+                        failuresJson = receipt.failuresJson,
+                        usageTotalTokens = receipt.usageTotalTokens,
+                        usageCost = receipt.usageCost,
+                        attempt = receipt.attempt,
+                        createdAt = receipt.createdAt,
+                    ),
+                )
+                receiptCount += 1
+            }
+
+            // 摘要卷不挂在任何一条消息上，按轮次范围记的，直接存就行
+            session.volumes.forEach { volume ->
+                // 位置编号也要跟着换。换不出来就留空（不知道当时停在哪），
+                // 留空比当它作废好 —— 作废会让上下文凭空涨回去
+                val anchor = volume.basedOnMessageId?.let { idMap[it] }
+                store.saveVolume(
+                    sessionId = sessionId,
+                    volume = StoryVolume(
+                        index = volume.index,
+                        fromTurn = volume.fromTurn,
+                        toTurn = volume.toTurn,
+                        text = volume.text,
+                        merged = volume.merged,
+                        basedOnMessageId = anchor,
+                    ),
+                    createdAt = volume.createdAt,
+                )
+                volumeCount += 1
+            }
+
             // 聊到哪一条也要跟着换编号。换不出来就退回最后插入的那条，
             // 总比让这一局打开后空白要好
             val head = session.headMessageId?.let { idMap[it] } ?: idMap.values.lastOrNull()
@@ -173,8 +252,11 @@ object BackupService {
             sessionCount = document.sessions.size,
             messageCount = messageCount,
             stateEventCount = eventCount,
+            receiptCount = receiptCount,
+            volumeCount = volumeCount,
             skippedMessageCount = skippedMessages,
             skippedEventCount = skippedEvents,
+            skippedReceiptCount = skippedReceipts,
         )
     }
 
